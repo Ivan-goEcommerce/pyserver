@@ -1,6 +1,6 @@
 FROM python
 
-WORKDIR \repos\pyserver
+WORKDIR /root/pyserver
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
