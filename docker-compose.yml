@@ -1,44 +1,41 @@
-version: '3.8'
+name: n8n-setup
 
 services:
-  n8n:
-    image: n8nio/n8n:latest
-    container_name: n8n
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:5678:5678"
-    environment:
-      - N8N_HOST=n8n-ivan.go-ecommerce.de
-      - N8N_PROTOCOL=http
-      - N8N_PORT=5678
-      - WEBHOOK_URL=http://n8n-ivan.go-ecommerce.de/
-      - GENERIC_TIMEZONE=Europe/Berlin
-      - TZ=Europe/Berlin
-    volumes:
-      - n8n_data:/home/node/.n8n
-    networks:
-      - n8n-network
 
-  nginx:
-    image: nginx:alpine
-    container_name: nginx-proxy
+  n8n:
+
+    image: docker.n8n.io/n8nio/n8n:latest
+
+    container_name: n8n
+
     restart: unless-stopped
+
     ports:
-      - "80:80"
-      - "443:443"
+
+      - "5678:5678"
+
+    environment:
+
+      - GENERIC_TIMEZONE=Europe/Berlin
+
+      - TZ=Europe/Berlin
+
+      # Wichtig: Erlaubt Login über HTTP (ohne SSL Zertifikat)
+
+      - N8N_SECURE_COOKIE=false
+
+      # Optional: Erhöht die Log-Ausführlichkeit zur Fehlerbehebung
+
+      - N8N_LOG_LEVEL=info
+
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/conf.d:/etc/nginx/conf.d:ro
-      - ./nginx/ssl:/etc/nginx/ssl:ro
-    depends_on:
-      - n8n
-    networks:
-      - n8n-network
+
+      - n8n_data:/home/node/.n8n
+
+
+
+# Definition des persistenten Volumes
 
 volumes:
+
   n8n_data:
-
-networks:
-  n8n-network:
-    driver: bridge
-
