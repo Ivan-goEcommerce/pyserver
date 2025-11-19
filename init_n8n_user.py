@@ -59,6 +59,17 @@ def hash_password(password):
     return hashed.decode('utf-8')
 
 
+def get_table_columns(cur, table_name):
+    """Get list of columns in a table."""
+    cur.execute("""
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name = %s
+        ORDER BY ordinal_position
+    """, (table_name,))
+    return [row[0] for row in cur.fetchall()]
+
+
 def create_owner_account():
     """Create owner account in n8n database."""
     try:
@@ -71,6 +82,19 @@ def create_owner_account():
         )
         cur = conn.cursor()
 
+        # Check if user table exists
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'user'
+            )
+        """)
+        if not cur.fetchone()[0]:
+            print("User table does not exist yet. Waiting for n8n to initialize...")
+            cur.close()
+            conn.close()
+            return False
+
         # Check if user already exists
         cur.execute("SELECT id FROM \"user\" WHERE email = %s", (ADMIN_EMAIL,))
         existing_user = cur.fetchone()
@@ -81,29 +105,54 @@ def create_owner_account():
             conn.close()
             return True
 
+        # Get table structure
+        columns = get_table_columns(cur, 'user')
+        print(f"Available columns in user table: {', '.join(columns)}")
+
         # Hash the password
         hashed_password = hash_password(ADMIN_PASSWORD)
         print(f"Creating owner account for {ADMIN_EMAIL}...")
 
-        # Insert the owner user
-        # n8n user table structure: id, email, password, firstName, lastName, role, etc.
-        insert_query = sql.SQL("""
-            INSERT INTO "user" (email, password, "firstName", "lastName", role, "globalRole", "createdAt", "updatedAt")
-            VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
-            RETURNING id
-        """)
+        # Build INSERT query based on available columns
+        # Required columns: email, password, firstName, lastName, globalRole
+        insert_cols = ['email', 'password', '"firstName"', '"lastName"']
+        insert_vals = [ADMIN_EMAIL, hashed_password, ADMIN_FIRST_NAME, ADMIN_LAST_NAME]
+        
+        # Add globalRole if it exists
+        if 'globalRole' in columns:
+            insert_cols.append('"globalRole"')
+            insert_vals.append('owner')
+        
+        # Add createdAt and updatedAt if they exist
+        if 'createdAt' in columns:
+            insert_cols.append('"createdAt"')
+            insert_vals.append('NOW()')
+        if 'updatedAt' in columns:
+            insert_cols.append('"updatedAt"')
+            insert_vals.append('NOW()')
 
-        cur.execute(
-            insert_query,
-            (
-                ADMIN_EMAIL,
-                hashed_password,
-                ADMIN_FIRST_NAME,
-                ADMIN_LAST_NAME,
-                'global:owner',
-                'owner'
-            )
-        )
+        # Build the INSERT query
+        columns_str = ', '.join(insert_cols)
+        placeholders = ', '.join(['%s'] * len([v for v in insert_vals if v != 'NOW()']) + 
+                                 ['NOW()'] * insert_vals.count('NOW()'))
+        
+        # Fix placeholders - replace NOW() in placeholders with actual NOW()
+        placeholders_list = []
+        val_list = []
+        for val in insert_vals:
+            if val == 'NOW()':
+                placeholders_list.append('NOW()')
+            else:
+                placeholders_list.append('%s')
+                val_list.append(val)
+
+        insert_query = f"""
+            INSERT INTO "user" ({columns_str})
+            VALUES ({', '.join(placeholders_list)})
+            RETURNING id
+        """
+
+        cur.execute(insert_query, val_list)
 
         user_id = cur.fetchone()[0]
         conn.commit()
@@ -118,9 +167,13 @@ def create_owner_account():
 
     except psycopg2.Error as e:
         print(f"Database error: {e}")
+        import traceback
+        traceback.print_exc()
         return False
     except Exception as e:
         print(f"Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -133,9 +186,40 @@ def main():
     if not wait_for_database():
         sys.exit(1)
 
-    # Wait a bit more for n8n to initialize the database schema
+    # Wait for n8n to initialize the database schema
     print("Waiting for n8n to initialize database schema...")
-    time.sleep(10)
+    max_schema_wait = 60  # Wait up to 60 seconds for schema
+    schema_wait_interval = 5
+    
+    for i in range(max_schema_wait // schema_wait_interval):
+        try:
+            conn = psycopg2.connect(
+                host=DB_HOST,
+                port=DB_PORT,
+                database=DB_NAME,
+                user=DB_USER,
+                password=DB_PASSWORD
+            )
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'user'
+                )
+            """)
+            if cur.fetchone()[0]:
+                print("Database schema is ready!")
+                cur.close()
+                conn.close()
+                break
+            cur.close()
+            conn.close()
+        except:
+            pass
+        
+        if i < (max_schema_wait // schema_wait_interval) - 1:
+            print(f"Schema not ready yet, waiting... ({i+1} attempts)")
+            time.sleep(schema_wait_interval)
 
     if create_owner_account():
         print("=" * 50)
