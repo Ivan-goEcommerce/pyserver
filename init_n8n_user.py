@@ -70,7 +70,7 @@ def get_table_columns(cur, table_name):
 
 
 def create_owner_account():
-    """Create owner account in n8n database."""
+    """Create owner account in n8n database or remove users if auth is disabled."""
     try:
         conn = psycopg2.connect(
             host=DB_HOST,
@@ -105,81 +105,31 @@ def create_owner_account():
         if existing_user:
             user_id, current_role = existing_user
             print(f"User {ADMIN_EMAIL} already exists (ID: {user_id}).")
+            print("Since N8N_USER_MANAGEMENT_DISABLED=true, deleting user to skip login...")
             
-            # Check if we need to delete user (if N8N_USER_MANAGEMENT_DISABLED is true)
-            # But actually, we want to keep the user and just ensure role is set
-            # Update role if needed
-            if 'roleSlug' in columns:
-                if current_role != 'global:owner':
-                    print(f"Updating roleSlug from '{current_role}' to 'global:owner'...")
-                    cur.execute("""
-                        UPDATE "user" 
-                        SET "roleSlug" = %s, "updatedAt" = NOW()
-                        WHERE id = %s
-                    """, ('global:owner', user_id))
-                    conn.commit()
-                    print("Role updated successfully!")
-                else:
-                    print("User already has 'global:owner' role.")
-            
-            # Update password to ensure it's correct
-            hashed_password = hash_password(ADMIN_PASSWORD)
-            print("Updating password...")
-            cur.execute("""
-                UPDATE "user" 
-                SET password = %s, "updatedAt" = NOW()
-                WHERE id = %s
-            """, (hashed_password, user_id))
+            # Delete all users to ensure no login screen appears
+            cur.execute("DELETE FROM \"user\"")
             conn.commit()
-            print("Password updated successfully!")
+            print("All users deleted. Login will be skipped.")
             
             cur.close()
             conn.close()
             return True
 
-        # Hash the password
-        hashed_password = hash_password(ADMIN_PASSWORD)
-        print(f"Creating owner account for {ADMIN_EMAIL}...")
-
-        # Build INSERT query based on available columns
-        insert_cols = ['email', 'password', '"firstName"', '"lastName"']
-        insert_vals = [ADMIN_EMAIL, hashed_password, ADMIN_FIRST_NAME, ADMIN_LAST_NAME]
+        # Since N8N_USER_MANAGEMENT_DISABLED=true, we don't create users
+        # Instead, ensure no users exist to skip login completely
+        print("Checking for existing users...")
+        cur.execute("SELECT COUNT(*) FROM \"user\"")
+        user_count = cur.fetchone()[0]
         
-        # Add roleSlug if available (this is the correct column name in n8n)
-        if 'roleSlug' in columns:
-            insert_cols.append('"roleSlug"')
-            insert_vals.append('global:owner')
-            print("Using 'roleSlug' column with value 'global:owner'")
-        elif 'role' in columns:
-            insert_cols.append('role')
-            insert_vals.append('global:owner')
-            print("Using 'role' column with value 'global:owner'")
-        elif 'globalRole' in columns:
-            insert_cols.append('"globalRole"')
-            insert_vals.append('owner')
-            print("Using 'globalRole' column with value 'owner'")
+        if user_count > 0:
+            print(f"Found {user_count} user(s). Deleting all users to skip login...")
+            cur.execute("DELETE FROM \"user\"")
+            conn.commit()
+            print("All users deleted. Login will be completely skipped.")
         else:
-            print("WARNING: No role column found. User will be created without role assignment.")
-
-        # Build the INSERT query
-        columns_str = ', '.join(insert_cols)
-        placeholders = ', '.join(['%s'] * len(insert_vals))
-
-        insert_query = f"""
-            INSERT INTO "user" ({columns_str})
-            VALUES ({placeholders})
-            RETURNING id
-        """
-
-        cur.execute(insert_query, insert_vals)
-
-        user_id = cur.fetchone()[0]
-        conn.commit()
-
-        print(f"Successfully created owner account with ID: {user_id}")
-        print(f"Email: {ADMIN_EMAIL}")
-        print(f"Password: {ADMIN_PASSWORD}")
-
+            print("No users found. Login will be skipped automatically.")
+        
         cur.close()
         conn.close()
         return True
