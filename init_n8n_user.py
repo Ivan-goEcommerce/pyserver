@@ -66,7 +66,11 @@ def hash_password(password):
 
 
 def create_or_get_user():
-    """Create default user if it doesn't exist, or get existing user."""
+    """Create default user if it doesn't exist, or get existing user.
+    
+    Uses direct SQL INSERT to create owner account as described in the approach.
+    Handles different n8n schema versions automatically.
+    """
     try:
         conn = psycopg2.connect(
             host=DB_HOST,
@@ -101,8 +105,8 @@ def create_or_get_user():
             conn.close()
             return user_id
         
-        # Create new user
-        print(f"Creating user '{DEFAULT_USER_EMAIL}'...")
+        # Create new user with hashed password
+        print(f"Creating owner user '{DEFAULT_USER_EMAIL}'...")
         user_id = str(uuid.uuid4())
         password_hash = hash_password(DEFAULT_USER_PASSWORD)
         
@@ -110,21 +114,144 @@ def create_or_get_user():
         cur.execute("SELECT NOW()")
         now = cur.fetchone()[0]
         
-        # Insert user - n8n user table structure
+        # Get available columns in user table
         cur.execute("""
-            INSERT INTO "user" (
-                id, email, password, firstName, lastName, 
-                "globalRoleId", "createdAt", "updatedAt"
-            ) VALUES (
-                %s, %s, %s, %s, %s,
-                (SELECT id FROM "role" WHERE name = 'owner' LIMIT 1),
-                %s, %s
-            )
-        """, (user_id, DEFAULT_USER_EMAIL, password_hash, DEFAULT_USER_FIRST_NAME, 
-              DEFAULT_USER_LAST_NAME, now, now))
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_schema = 'public' AND table_name = 'user' 
+            ORDER BY ordinal_position
+        """)
+        columns = [row[0] for row in cur.fetchall()]
+        print(f"Available columns in user table: {columns}")
         
+        # Build INSERT statement - try simpler approach first, then fallback
+        insert_cols = []
+        insert_vals = []
+        placeholders = []
+        
+        # Required columns
+        if 'id' in columns:
+            insert_cols.append('id')
+            insert_vals.append(user_id)
+            placeholders.append('%s')
+        
+        if 'email' in columns:
+            insert_cols.append('email')
+            insert_vals.append(DEFAULT_USER_EMAIL)
+            placeholders.append('%s')
+        
+        if 'password' in columns:
+            insert_cols.append('password')
+            insert_vals.append(password_hash)
+            placeholders.append('%s')
+        
+        # Name columns
+        first_name_col = None
+        for col in ['firstName', 'firstname', 'first_name']:
+            if col in columns:
+                first_name_col = col
+                break
+        
+        if first_name_col:
+            if first_name_col == 'firstName':
+                insert_cols.append('"firstName"')
+            else:
+                insert_cols.append(first_name_col)
+            insert_vals.append(DEFAULT_USER_FIRST_NAME)
+            placeholders.append('%s')
+        
+        last_name_col = None
+        for col in ['lastName', 'lastname', 'last_name']:
+            if col in columns:
+                last_name_col = col
+                break
+        
+        if last_name_col:
+            if last_name_col == 'lastName':
+                insert_cols.append('"lastName"')
+            else:
+                insert_cols.append(last_name_col)
+            insert_vals.append(DEFAULT_USER_LAST_NAME)
+            placeholders.append('%s')
+        
+        # Role assignment - try different approaches
+        # Approach 1: Direct 'role' column with 'global:owner' value (older n8n versions)
+        if 'role' in columns:
+            insert_cols.append('role')
+            insert_vals.append('global:owner')
+            placeholders.append('%s')
+            print("Using direct 'role' column with 'global:owner' value")
+        # Approach 2: globalRoleId with subquery to role table (newer n8n versions)
+        elif 'globalRoleId' in columns:
+            insert_cols.append('"globalRoleId"')
+            # Get owner role ID from role table
+            cur.execute('SELECT id FROM "role" WHERE name = %s LIMIT 1', ('owner',))
+            role_result = cur.fetchone()
+            if role_result:
+                insert_vals.append(role_result[0])
+                placeholders.append('%s')
+                print(f"Using globalRoleId with owner role ID: {role_result[0]}")
+            else:
+                print("WARNING: Owner role not found in role table, but continuing...")
+        elif 'global_role_id' in columns:
+            insert_cols.append('global_role_id')
+            cur.execute('SELECT id FROM role WHERE name = %s LIMIT 1', ('owner',))
+            role_result = cur.fetchone()
+            if role_result:
+                insert_vals.append(role_result[0])
+                placeholders.append('%s')
+                print(f"Using global_role_id with owner role ID: {role_result[0]}")
+            else:
+                print("WARNING: Owner role not found in role table, but continuing...")
+        else:
+            print("WARNING: No role column found, user may not have proper permissions")
+        
+        # Timestamps
+        created_at_col = None
+        for col in ['createdAt', 'created_at']:
+            if col in columns:
+                created_at_col = col
+                break
+        
+        if created_at_col:
+            if created_at_col == 'createdAt':
+                insert_cols.append('"createdAt"')
+            else:
+                insert_cols.append(created_at_col)
+            insert_vals.append(now)
+            placeholders.append('%s')
+        
+        updated_at_col = None
+        for col in ['updatedAt', 'updated_at']:
+            if col in columns:
+                updated_at_col = col
+                break
+        
+        if updated_at_col:
+            if updated_at_col == 'updatedAt':
+                insert_cols.append('"updatedAt"')
+            else:
+                insert_cols.append(updated_at_col)
+            insert_vals.append(now)
+            placeholders.append('%s')
+        
+        # Build and execute the INSERT query
+        insert_query = f"""
+            INSERT INTO "user" (
+                {', '.join(insert_cols)}
+            ) VALUES (
+                {', '.join(placeholders)}
+            )
+        """
+        
+        print(f"Executing INSERT with columns: {insert_cols}")
+        cur.execute(insert_query, insert_vals)
         conn.commit()
-        print(f"✓ Successfully created user '{DEFAULT_USER_EMAIL}' (ID: {user_id})")
+        
+        print(f"✓ Successfully created owner user '{DEFAULT_USER_EMAIL}' (ID: {user_id})")
+        print(f"  Email: {DEFAULT_USER_EMAIL}")
+        print(f"  Password: {DEFAULT_USER_PASSWORD}")
+        print(f"  Role: global:owner")
         
         cur.close()
         conn.close()
