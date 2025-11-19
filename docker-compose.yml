@@ -50,13 +50,8 @@ services:
       - N8N_PROTOCOL=https
       - N8N_SECURE_COOKIE=true
 
-      # User Management aktivieren (für Owner-Account)
-      - N8N_USER_MANAGEMENT_DISABLED=false
-      
-      # Basic Authentication - automatischer Login beim URL-Aufruf
-      - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=Ivan.Levshyn@go-ecommerce.de
-      - N8N_BASIC_AUTH_PASSWORD=05012005 Ivan
+      # User Management komplett deaktivieren - Login wird übersprungen
+      - N8N_USER_MANAGEMENT_DISABLED=true
 
       # PostgreSQL Konfiguration
       - DB_TYPE=postgresdb
