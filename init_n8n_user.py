@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-Script to create an n8n owner account directly in PostgreSQL database.
-This bypasses the n8n setup wizard.
+Script to delete all users from n8n database to skip login.
+This ensures that N8N_USER_MANAGEMENT_DISABLED=true works correctly.
 """
 import os
 import sys
 import time
 import psycopg2
-import bcrypt
 
 # Database connection parameters
 DB_HOST = os.getenv('DB_POSTGRESDB_HOST', 'postgres')
@@ -15,12 +14,6 @@ DB_PORT = os.getenv('DB_POSTGRESDB_PORT', '5432')
 DB_NAME = os.getenv('DB_POSTGRESDB_DATABASE', 'n8n')
 DB_USER = os.getenv('DB_POSTGRESDB_USER', 'n8n')
 DB_PASSWORD = os.getenv('DB_POSTGRESDB_PASSWORD', 'n8n')
-
-# Admin user credentials
-ADMIN_EMAIL = os.getenv('N8N_ADMIN_EMAIL', 'admin@example.com')
-ADMIN_PASSWORD = os.getenv('N8N_ADMIN_PASSWORD', 'admin123')
-ADMIN_FIRST_NAME = os.getenv('N8N_ADMIN_FIRST_NAME', 'Admin')
-ADMIN_LAST_NAME = os.getenv('N8N_ADMIN_LAST_NAME', 'User')
 
 MAX_RETRIES = 30
 RETRY_DELAY = 2
@@ -51,25 +44,7 @@ def wait_for_database():
     return False
 
 
-def hash_password(password):
-    """Hash password using bcrypt (same as n8n uses)."""
-    salt = bcrypt.gensalt()
-    hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
-    return hashed.decode('utf-8')
-
-
-def get_table_columns(cur, table_name):
-    """Get list of columns in a table."""
-    cur.execute("""
-        SELECT column_name 
-        FROM information_schema.columns 
-        WHERE table_name = %s
-        ORDER BY ordinal_position
-    """, (table_name,))
-    return [row[0] for row in cur.fetchall()]
-
-
-def create_owner_account():
+def delete_all_users():
     """Ensure no users exist - login will be completely skipped."""
     try:
         conn = psycopg2.connect(
@@ -101,9 +76,46 @@ def create_owner_account():
         
         if user_count > 0:
             print(f"Found {user_count} user(s). Deleting all users to skip login completely...")
-            cur.execute("DELETE FROM \"user\"")
+            
+            # Try regular delete first (most common case)
+            try:
+                cur.execute("DELETE FROM \"user\"")
+                print("Deleted users with regular DELETE...")
+            except Exception as delete_error:
+                error_msg = str(delete_error)
+                print(f"Regular delete failed: {error_msg}")
+                
+                # If foreign key constraint error, try to handle it
+                if "foreign key" in error_msg.lower() or "violates foreign key" in error_msg.lower():
+                    print("Foreign key constraint detected. Attempting to delete with constraint bypass...")
+                    # Try to temporarily disable foreign key checks
+                    try:
+                        # Get all user IDs first
+                        cur.execute("SELECT id FROM \"user\"")
+                        user_ids = [row[0] for row in cur.fetchall()]
+                        
+                        # Try to delete by temporarily disabling triggers
+                        cur.execute("SET session_replication_role = 'replica';")
+                        cur.execute("DELETE FROM \"user\"")
+                        cur.execute("SET session_replication_role = 'origin';")
+                        print("Deleted users by temporarily disabling foreign key checks...")
+                    except Exception as final_error:
+                        print(f"Constraint bypass also failed: {final_error}")
+                        raise
+                else:
+                    raise
+            
             conn.commit()
-            print("All users deleted. Login will be completely skipped - direct access to n8n!")
+            
+            # Verify deletion
+            cur.execute("SELECT COUNT(*) FROM \"user\"")
+            remaining_count = cur.fetchone()[0]
+            
+            if remaining_count == 0:
+                print(f"✓ Successfully deleted all {user_count} user(s). Login will be completely skipped - direct access to n8n!")
+            else:
+                print(f"⚠ WARNING: {remaining_count} user(s) still remain after deletion attempt!")
+                print("This might indicate foreign key constraints that could not be bypassed.")
         else:
             print("No users found. Login will be skipped automatically - direct access to n8n!")
         
@@ -126,7 +138,7 @@ def create_owner_account():
 def main():
     """Main function."""
     print("=" * 50)
-    print("n8n Owner Account Initialization Script")
+    print("n8n User Deletion Script - Skip Login")
     print("=" * 50)
 
     if not wait_for_database():
@@ -174,9 +186,9 @@ def main():
             time.sleep(schema_wait_interval)
     
     if not schema_ready:
-        print("WARNING: Schema might not be fully ready, but attempting to create user anyway...")
+        print("WARNING: Schema might not be fully ready, but attempting to delete users anyway...")
 
-    if create_owner_account():
+    if delete_all_users():
         print("=" * 50)
         print("Initialization completed successfully!")
         print("=" * 50)
