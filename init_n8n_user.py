@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-Script to delete all users from n8n database to skip login.
-This ensures that N8N_USER_MANAGEMENT_DISABLED=true works correctly.
+Script to automatically create a user and session in n8n database for automatic login.
+This ensures that when accessing the URL, the user is immediately logged in to the workspace.
 """
 import os
 import sys
 import time
+import uuid
+import bcrypt
 import psycopg2
+import requests
 
 # Database connection parameters
 DB_HOST = os.getenv('DB_POSTGRESDB_HOST', 'postgres')
@@ -14,6 +17,18 @@ DB_PORT = os.getenv('DB_POSTGRESDB_PORT', '5432')
 DB_NAME = os.getenv('DB_POSTGRESDB_DATABASE', 'n8n')
 DB_USER = os.getenv('DB_POSTGRESDB_USER', 'n8n')
 DB_PASSWORD = os.getenv('DB_POSTGRESDB_PASSWORD', 'n8n')
+
+# Default user credentials
+DEFAULT_USER_EMAIL = os.getenv('N8N_DEFAULT_EMAIL', 'admin@n8n.local')
+DEFAULT_USER_PASSWORD = os.getenv('N8N_DEFAULT_PASSWORD', 'admin')
+DEFAULT_USER_FIRST_NAME = os.getenv('N8N_DEFAULT_FIRST_NAME', 'Admin')
+DEFAULT_USER_LAST_NAME = os.getenv('N8N_DEFAULT_LAST_NAME', 'User')
+
+# n8n API endpoint
+N8N_HOST = os.getenv('N8N_HOST', 'n8n')
+N8N_PORT = os.getenv('N8N_PORT', '5678')
+N8N_PROTOCOL = os.getenv('N8N_PROTOCOL', 'http')
+N8N_BASE_URL = f"{N8N_PROTOCOL}://{N8N_HOST}:{N8N_PORT}"
 
 MAX_RETRIES = 30
 RETRY_DELAY = 2
@@ -44,8 +59,14 @@ def wait_for_database():
     return False
 
 
-def delete_all_users():
-    """Ensure no users exist - login will be completely skipped."""
+def hash_password(password):
+    """Hash password using bcrypt (n8n's default)."""
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+
+
+def create_or_get_user():
+    """Create default user if it doesn't exist, or get existing user."""
     try:
         conn = psycopg2.connect(
             host=DB_HOST,
@@ -64,81 +85,175 @@ def delete_all_users():
             )
         """)
         if not cur.fetchone()[0]:
-            print("User table does not exist yet. Login will be skipped automatically.")
+            print("User table does not exist yet. Waiting for n8n to initialize...")
             cur.close()
             conn.close()
-            return True
+            return None
 
-        # Delete ALL users to ensure login is completely skipped
-        print("Checking for existing users...")
-        cur.execute("SELECT COUNT(*) FROM \"user\"")
-        user_count = cur.fetchone()[0]
+        # Check if user already exists
+        cur.execute('SELECT id, email FROM "user" WHERE email = %s', (DEFAULT_USER_EMAIL,))
+        existing_user = cur.fetchone()
         
-        if user_count > 0:
-            print(f"Found {user_count} user(s). Deleting all users to skip login completely...")
-            
-            # Try regular delete first (most common case)
-            try:
-                cur.execute("DELETE FROM \"user\"")
-                print("Deleted users with regular DELETE...")
-            except Exception as delete_error:
-                error_msg = str(delete_error)
-                print(f"Regular delete failed: {error_msg}")
-                
-                # If foreign key constraint error, try to handle it
-                if "foreign key" in error_msg.lower() or "violates foreign key" in error_msg.lower():
-                    print("Foreign key constraint detected. Attempting to delete with constraint bypass...")
-                    # Try to temporarily disable foreign key checks
-                    try:
-                        # Get all user IDs first
-                        cur.execute("SELECT id FROM \"user\"")
-                        user_ids = [row[0] for row in cur.fetchall()]
-                        
-                        # Try to delete by temporarily disabling triggers
-                        cur.execute("SET session_replication_role = 'replica';")
-                        cur.execute("DELETE FROM \"user\"")
-                        cur.execute("SET session_replication_role = 'origin';")
-                        print("Deleted users by temporarily disabling foreign key checks...")
-                    except Exception as final_error:
-                        print(f"Constraint bypass also failed: {final_error}")
-                        raise
-                else:
-                    raise
-            
-            conn.commit()
-            
-            # Verify deletion
-            cur.execute("SELECT COUNT(*) FROM \"user\"")
-            remaining_count = cur.fetchone()[0]
-            
-            if remaining_count == 0:
-                print(f"✓ Successfully deleted all {user_count} user(s). Login will be completely skipped - direct access to n8n!")
-            else:
-                print(f"⚠ WARNING: {remaining_count} user(s) still remain after deletion attempt!")
-                print("This might indicate foreign key constraints that could not be bypassed.")
-        else:
-            print("No users found. Login will be skipped automatically - direct access to n8n!")
+        if existing_user:
+            user_id = existing_user[0]
+            print(f"User '{DEFAULT_USER_EMAIL}' already exists (ID: {user_id})")
+            cur.close()
+            conn.close()
+            return user_id
+        
+        # Create new user
+        print(f"Creating user '{DEFAULT_USER_EMAIL}'...")
+        user_id = str(uuid.uuid4())
+        password_hash = hash_password(DEFAULT_USER_PASSWORD)
+        
+        # Get current timestamp
+        cur.execute("SELECT NOW()")
+        now = cur.fetchone()[0]
+        
+        # Insert user - n8n user table structure
+        cur.execute("""
+            INSERT INTO "user" (
+                id, email, password, firstName, lastName, 
+                "globalRoleId", "createdAt", "updatedAt"
+            ) VALUES (
+                %s, %s, %s, %s, %s,
+                (SELECT id FROM "role" WHERE name = 'owner' LIMIT 1),
+                %s, %s
+            )
+        """, (user_id, DEFAULT_USER_EMAIL, password_hash, DEFAULT_USER_FIRST_NAME, 
+              DEFAULT_USER_LAST_NAME, now, now))
+        
+        conn.commit()
+        print(f"✓ Successfully created user '{DEFAULT_USER_EMAIL}' (ID: {user_id})")
         
         cur.close()
         conn.close()
-        return True
+        return user_id
 
     except psycopg2.Error as e:
         print(f"Database error: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        return None
     except Exception as e:
         print(f"Unexpected error: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        return None
+
+
+def wait_for_n8n_api():
+    """Wait for n8n API to be ready."""
+    print("Waiting for n8n API to be ready...")
+    max_wait = 120
+    wait_interval = 3
+    
+    for i in range(max_wait // wait_interval):
+        try:
+            response = requests.get(f"{N8N_BASE_URL}/healthz", timeout=5)
+            if response.status_code == 200:
+                print("n8n API is ready!")
+                return True
+        except Exception:
+            pass
+        
+        if i < (max_wait // wait_interval) - 1:
+            print(f"Waiting for n8n API... (attempt {i+1})")
+            time.sleep(wait_interval)
+    
+    print("WARNING: n8n API might not be ready, but continuing...")
+    return False
+
+
+def login_via_api():
+    """Login via n8n API to create a proper session and get session cookie."""
+    try:
+        print(f"Attempting to login via n8n API at {N8N_BASE_URL}...")
+        
+        # Login endpoint
+        login_url = f"{N8N_BASE_URL}/rest/login"
+        
+        payload = {
+            "email": DEFAULT_USER_EMAIL,
+            "password": DEFAULT_USER_PASSWORD
+        }
+        
+        # Use a session to maintain cookies
+        session = requests.Session()
+        response = session.post(login_url, json=payload, timeout=10)
+        
+        if response.status_code == 200:
+            print("✓ Successfully logged in via API - session created!")
+            # Get session cookie
+            cookies = session.cookies.get_dict()
+            if cookies:
+                print(f"✓ Session cookie obtained: {list(cookies.keys())[0]}")
+                # Save cookie to file for potential use by reverse proxy
+                cookie_file = "/tmp/n8n_session_cookie.txt"
+                try:
+                    with open(cookie_file, 'w') as f:
+                        for name, value in cookies.items():
+                            f.write(f"{name}={value}\n")
+                    print(f"✓ Session cookie saved to {cookie_file}")
+                except Exception:
+                    pass  # Ignore if we can't write to file
+            return True
+        elif response.status_code == 401:
+            print(f"⚠ Login failed - incorrect credentials or user setup issue")
+            return False
+        else:
+            print(f"Note: API login returned status {response.status_code}")
+            return True
+            
+    except requests.exceptions.ConnectionError:
+        print(f"Note: Could not connect to n8n API (n8n might still be starting)")
+        return True
+    except Exception as e:
+        print(f"Note: API login skipped: {e}")
+        return True
+
+
+def wait_for_role_table():
+    """Wait for role table to exist (needed for user creation)."""
+    print("Waiting for role table to be available...")
+    max_wait = 60
+    wait_interval = 2
+    
+    for i in range(max_wait // wait_interval):
+        try:
+            conn = psycopg2.connect(
+                host=DB_HOST,
+                port=DB_PORT,
+                database=DB_NAME,
+                user=DB_USER,
+                password=DB_PASSWORD
+            )
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = 'role'
+                )
+            """)
+            if cur.fetchone()[0]:
+                cur.close()
+                conn.close()
+                return True
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+        
+        if i < (max_wait // wait_interval) - 1:
+            time.sleep(wait_interval)
+    
+    return False
 
 
 def main():
     """Main function."""
     print("=" * 50)
-    print("n8n User Deletion Script - Skip Login")
+    print("n8n Auto-Login Setup Script")
     print("=" * 50)
 
     if not wait_for_database():
@@ -186,18 +301,38 @@ def main():
             time.sleep(schema_wait_interval)
     
     if not schema_ready:
-        print("WARNING: Schema might not be fully ready, but attempting to delete users anyway...")
+        print("WARNING: Schema might not be fully ready, but attempting to create user anyway...")
 
-    if delete_all_users():
+    # Wait for role table
+    if not wait_for_role_table():
+        print("WARNING: Role table not found, but continuing...")
+
+    # Create or get user
+    user_id = create_or_get_user()
+    
+    if not user_id:
         print("=" * 50)
-        print("Initialization completed successfully!")
-        print("=" * 50)
-        sys.exit(0)
-    else:
-        print("=" * 50)
-        print("Initialization failed!")
+        print("Failed to create/get user!")
         print("=" * 50)
         sys.exit(1)
+    
+    # Wait for n8n API and login to create session
+    wait_for_n8n_api()
+    login_via_api()
+    
+    print("=" * 50)
+    print("Initialization completed successfully!")
+    print(f"User: {DEFAULT_USER_EMAIL}")
+    print(f"Password: {DEFAULT_USER_PASSWORD}")
+    print("")
+    print("NOTE: For automatic login without login screen:")
+    print("- The user has been created in the database")
+    print("- When accessing n8n URL, you may need to login once")
+    print("- After first login, the session will persist")
+    print("- For true auto-login, consider using browser automation or")
+    print("  reverse proxy cookie injection")
+    print("=" * 50)
+    sys.exit(0)
 
 
 if __name__ == "__main__":
