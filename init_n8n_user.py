@@ -7,7 +7,6 @@ import os
 import sys
 import time
 import psycopg2
-from psycopg2 import sql
 import bcrypt
 
 # Database connection parameters
@@ -59,17 +58,6 @@ def hash_password(password):
     return hashed.decode('utf-8')
 
 
-def get_table_columns(cur, table_name):
-    """Get list of columns in a table."""
-    cur.execute("""
-        SELECT column_name 
-        FROM information_schema.columns 
-        WHERE table_name = %s
-        ORDER BY ordinal_position
-    """, (table_name,))
-    return [row[0] for row in cur.fetchall()]
-
-
 def create_owner_account():
     """Create owner account in n8n database."""
     try:
@@ -105,54 +93,21 @@ def create_owner_account():
             conn.close()
             return True
 
-        # Get table structure
-        columns = get_table_columns(cur, 'user')
-        print(f"Available columns in user table: {', '.join(columns)}")
-
         # Hash the password
         hashed_password = hash_password(ADMIN_PASSWORD)
         print(f"Creating owner account for {ADMIN_EMAIL}...")
 
-        # Build INSERT query based on available columns
-        # Required columns: email, password, firstName, lastName, globalRole
-        insert_cols = ['email', 'password', '"firstName"', '"lastName"']
-        insert_vals = [ADMIN_EMAIL, hashed_password, ADMIN_FIRST_NAME, ADMIN_LAST_NAME]
-        
-        # Add globalRole if it exists
-        if 'globalRole' in columns:
-            insert_cols.append('"globalRole"')
-            insert_vals.append('owner')
-        
-        # Add createdAt and updatedAt if they exist
-        if 'createdAt' in columns:
-            insert_cols.append('"createdAt"')
-            insert_vals.append('NOW()')
-        if 'updatedAt' in columns:
-            insert_cols.append('"updatedAt"')
-            insert_vals.append('NOW()')
-
-        # Build the INSERT query
-        columns_str = ', '.join(insert_cols)
-        placeholders = ', '.join(['%s'] * len([v for v in insert_vals if v != 'NOW()']) + 
-                                 ['NOW()'] * insert_vals.count('NOW()'))
-        
-        # Fix placeholders - replace NOW() in placeholders with actual NOW()
-        placeholders_list = []
-        val_list = []
-        for val in insert_vals:
-            if val == 'NOW()':
-                placeholders_list.append('NOW()')
-            else:
-                placeholders_list.append('%s')
-                val_list.append(val)
-
-        insert_query = f"""
-            INSERT INTO "user" ({columns_str})
-            VALUES ({', '.join(placeholders_list)})
+        # Insert only required columns: email, password, firstName, lastName
+        insert_query = """
+            INSERT INTO "user" (email, password, "firstName", "lastName")
+            VALUES (%s, %s, %s, %s)
             RETURNING id
         """
 
-        cur.execute(insert_query, val_list)
+        cur.execute(
+            insert_query,
+            (ADMIN_EMAIL, hashed_password, ADMIN_FIRST_NAME, ADMIN_LAST_NAME)
+        )
 
         user_id = cur.fetchone()[0]
         conn.commit()
