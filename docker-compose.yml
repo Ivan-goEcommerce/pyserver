@@ -50,8 +50,9 @@ services:
       - N8N_PROTOCOL=https
       - N8N_SECURE_COOKIE=true
 
-      # User Management deaktivieren - Login wird übersprungen
+      # User Management deaktivieren - Login wird komplett übersprungen
       - N8N_USER_MANAGEMENT_DISABLED=true
+      - N8N_AUTH_EXCLUDE_ENDPOINTS=*
 
       # PostgreSQL Konfiguration
       - DB_TYPE=postgresdb

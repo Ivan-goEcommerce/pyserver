@@ -106,6 +106,8 @@ def create_owner_account():
             user_id, current_role = existing_user
             print(f"User {ADMIN_EMAIL} already exists (ID: {user_id}).")
             
+            # Check if we need to delete user (if N8N_USER_MANAGEMENT_DISABLED is true)
+            # But actually, we want to keep the user and just ensure role is set
             # Update role if needed
             if 'roleSlug' in columns:
                 if current_role != 'global:owner':
