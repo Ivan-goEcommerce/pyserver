@@ -99,11 +99,38 @@ def create_owner_account():
         print(f"Available columns in user table: {', '.join(columns)}")
 
         # Check if user already exists
-        cur.execute("SELECT id FROM \"user\" WHERE email = %s", (ADMIN_EMAIL,))
+        cur.execute("SELECT id, \"roleSlug\" FROM \"user\" WHERE email = %s", (ADMIN_EMAIL,))
         existing_user = cur.fetchone()
 
         if existing_user:
-            print(f"User {ADMIN_EMAIL} already exists. Skipping creation.")
+            user_id, current_role = existing_user
+            print(f"User {ADMIN_EMAIL} already exists (ID: {user_id}).")
+            
+            # Update role if needed
+            if 'roleSlug' in columns:
+                if current_role != 'global:owner':
+                    print(f"Updating roleSlug from '{current_role}' to 'global:owner'...")
+                    cur.execute("""
+                        UPDATE "user" 
+                        SET "roleSlug" = %s, "updatedAt" = NOW()
+                        WHERE id = %s
+                    """, ('global:owner', user_id))
+                    conn.commit()
+                    print("Role updated successfully!")
+                else:
+                    print("User already has 'global:owner' role.")
+            
+            # Update password to ensure it's correct
+            hashed_password = hash_password(ADMIN_PASSWORD)
+            print("Updating password...")
+            cur.execute("""
+                UPDATE "user" 
+                SET password = %s, "updatedAt" = NOW()
+                WHERE id = %s
+            """, (hashed_password, user_id))
+            conn.commit()
+            print("Password updated successfully!")
+            
             cur.close()
             conn.close()
             return True
@@ -116,8 +143,12 @@ def create_owner_account():
         insert_cols = ['email', 'password', '"firstName"', '"lastName"']
         insert_vals = [ADMIN_EMAIL, hashed_password, ADMIN_FIRST_NAME, ADMIN_LAST_NAME]
         
-        # Try to add role or globalRole if available
-        if 'role' in columns:
+        # Add roleSlug if available (this is the correct column name in n8n)
+        if 'roleSlug' in columns:
+            insert_cols.append('"roleSlug"')
+            insert_vals.append('global:owner')
+            print("Using 'roleSlug' column with value 'global:owner'")
+        elif 'role' in columns:
             insert_cols.append('role')
             insert_vals.append('global:owner')
             print("Using 'role' column with value 'global:owner'")
@@ -126,7 +157,7 @@ def create_owner_account():
             insert_vals.append('owner')
             print("Using 'globalRole' column with value 'owner'")
         else:
-            print("WARNING: No role or globalRole column found. User will be created without role assignment.")
+            print("WARNING: No role column found. User will be created without role assignment.")
 
         # Build the INSERT query
         columns_str = ', '.join(insert_cols)
