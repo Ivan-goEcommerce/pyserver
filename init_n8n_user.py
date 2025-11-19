@@ -121,8 +121,11 @@ def create_or_get_user():
             WHERE table_schema = 'public' AND table_name = 'user' 
             ORDER BY ordinal_position
         """)
-        columns = [row[0] for row in cur.fetchall()]
-        print(f"Available columns in user table: {columns}")
+        columns_raw = [row[0] for row in cur.fetchall()]
+        # Create case-insensitive lookup dictionary
+        columns_lower = {col.lower(): col for col in columns_raw}
+        columns = set(columns_raw)  # Keep original for exact matching
+        print(f"Available columns in user table: {columns_raw}")
         
         # Build INSERT statement - try simpler approach first, then fallback
         insert_cols = []
@@ -130,106 +133,132 @@ def create_or_get_user():
         placeholders = []
         
         # Required columns
-        if 'id' in columns:
+        if 'id' in columns or 'id' in columns_lower:
             insert_cols.append('id')
             insert_vals.append(user_id)
             placeholders.append('%s')
         
-        if 'email' in columns:
+        if 'email' in columns or 'email' in columns_lower:
             insert_cols.append('email')
             insert_vals.append(DEFAULT_USER_EMAIL)
             placeholders.append('%s')
         
-        if 'password' in columns:
+        if 'password' in columns or 'password' in columns_lower:
             insert_cols.append('password')
             insert_vals.append(password_hash)
             placeholders.append('%s')
         
-        # Name columns
+        # Name columns - case-insensitive search
         first_name_col = None
-        for col in ['firstName', 'firstname', 'first_name']:
-            if col in columns:
-                first_name_col = col
+        for col_variant in ['firstname', 'first_name', 'firstname']:
+            if col_variant in columns_lower:
+                first_name_col = columns_lower[col_variant]
                 break
         
+        # Also check for camelCase version
+        if not first_name_col:
+            for col in columns_raw:
+                if col.lower() == 'firstname' or col.lower() == 'first_name':
+                    first_name_col = col
+                    break
+        
         if first_name_col:
-            if first_name_col == 'firstName':
-                insert_cols.append('"firstName"')
+            # Use quotes if camelCase (contains uppercase letters), otherwise use as-is
+            if first_name_col != first_name_col.lower():
+                insert_cols.append(f'"{first_name_col}"')
             else:
                 insert_cols.append(first_name_col)
             insert_vals.append(DEFAULT_USER_FIRST_NAME)
             placeholders.append('%s')
         
         last_name_col = None
-        for col in ['lastName', 'lastname', 'last_name']:
-            if col in columns:
-                last_name_col = col
+        for col_variant in ['lastname', 'last_name', 'lastname']:
+            if col_variant in columns_lower:
+                last_name_col = columns_lower[col_variant]
                 break
         
+        # Also check for camelCase version
+        if not last_name_col:
+            for col in columns_raw:
+                if col.lower() == 'lastname' or col.lower() == 'last_name':
+                    last_name_col = col
+                    break
+        
         if last_name_col:
-            if last_name_col == 'lastName':
-                insert_cols.append('"lastName"')
+            # Use quotes if camelCase (contains uppercase letters), otherwise use as-is
+            if last_name_col != last_name_col.lower():
+                insert_cols.append(f'"{last_name_col}"')
             else:
                 insert_cols.append(last_name_col)
             insert_vals.append(DEFAULT_USER_LAST_NAME)
             placeholders.append('%s')
         
-        # Role assignment - try different approaches
+        # Role assignment - try different approaches (case-insensitive)
+        role_col = None
         # Approach 1: Direct 'role' column with 'global:owner' value (older n8n versions)
-        if 'role' in columns:
-            insert_cols.append('role')
+        if 'role' in columns_lower:
+            role_col = columns_lower['role']
+            insert_cols.append(role_col)
             insert_vals.append('global:owner')
             placeholders.append('%s')
             print("Using direct 'role' column with 'global:owner' value")
         # Approach 2: globalRoleId with subquery to role table (newer n8n versions)
-        elif 'globalRoleId' in columns:
-            insert_cols.append('"globalRoleId"')
+        elif 'globalroleid' in columns_lower:
+            role_col = columns_lower['globalroleid']
+            # Use quotes if camelCase (contains uppercase letters)
+            if role_col != role_col.lower():
+                insert_cols.append(f'"{role_col}"')
+            else:
+                insert_cols.append(role_col)
             # Get owner role ID from role table
             cur.execute('SELECT id FROM "role" WHERE name = %s LIMIT 1', ('owner',))
             role_result = cur.fetchone()
             if role_result:
                 insert_vals.append(role_result[0])
                 placeholders.append('%s')
-                print(f"Using globalRoleId with owner role ID: {role_result[0]}")
+                print(f"Using {role_col} with owner role ID: {role_result[0]}")
             else:
                 print("WARNING: Owner role not found in role table, but continuing...")
-        elif 'global_role_id' in columns:
-            insert_cols.append('global_role_id')
+        elif 'global_role_id' in columns_lower:
+            role_col = columns_lower['global_role_id']
+            insert_cols.append(role_col)
             cur.execute('SELECT id FROM role WHERE name = %s LIMIT 1', ('owner',))
             role_result = cur.fetchone()
             if role_result:
                 insert_vals.append(role_result[0])
                 placeholders.append('%s')
-                print(f"Using global_role_id with owner role ID: {role_result[0]}")
+                print(f"Using {role_col} with owner role ID: {role_result[0]}")
             else:
                 print("WARNING: Owner role not found in role table, but continuing...")
         else:
             print("WARNING: No role column found, user may not have proper permissions")
         
-        # Timestamps
+        # Timestamps - case-insensitive
         created_at_col = None
-        for col in ['createdAt', 'created_at']:
-            if col in columns:
-                created_at_col = col
+        for col_variant in ['createdat', 'created_at']:
+            if col_variant in columns_lower:
+                created_at_col = columns_lower[col_variant]
                 break
         
         if created_at_col:
-            if created_at_col == 'createdAt':
-                insert_cols.append('"createdAt"')
+            # Use quotes if camelCase (contains uppercase letters)
+            if created_at_col != created_at_col.lower():
+                insert_cols.append(f'"{created_at_col}"')
             else:
                 insert_cols.append(created_at_col)
             insert_vals.append(now)
             placeholders.append('%s')
         
         updated_at_col = None
-        for col in ['updatedAt', 'updated_at']:
-            if col in columns:
-                updated_at_col = col
+        for col_variant in ['updatedat', 'updated_at']:
+            if col_variant in columns_lower:
+                updated_at_col = columns_lower[col_variant]
                 break
         
         if updated_at_col:
-            if updated_at_col == 'updatedAt':
-                insert_cols.append('"updatedAt"')
+            # Use quotes if camelCase (contains uppercase letters)
+            if updated_at_col != updated_at_col.lower():
+                insert_cols.append(f'"{updated_at_col}"')
             else:
                 insert_cols.append(updated_at_col)
             insert_vals.append(now)
