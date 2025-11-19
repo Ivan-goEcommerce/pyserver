@@ -58,6 +58,17 @@ def hash_password(password):
     return hashed.decode('utf-8')
 
 
+def get_table_columns(cur, table_name):
+    """Get list of columns in a table."""
+    cur.execute("""
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name = %s
+        ORDER BY ordinal_position
+    """, (table_name,))
+    return [row[0] for row in cur.fetchall()]
+
+
 def create_owner_account():
     """Create owner account in n8n database."""
     try:
@@ -83,6 +94,10 @@ def create_owner_account():
             conn.close()
             return False
 
+        # Get available columns
+        columns = get_table_columns(cur, 'user')
+        print(f"Available columns in user table: {', '.join(columns)}")
+
         # Check if user already exists
         cur.execute("SELECT id FROM \"user\" WHERE email = %s", (ADMIN_EMAIL,))
         existing_user = cur.fetchone()
@@ -97,17 +112,33 @@ def create_owner_account():
         hashed_password = hash_password(ADMIN_PASSWORD)
         print(f"Creating owner account for {ADMIN_EMAIL}...")
 
-        # Insert required columns: email, password, firstName, lastName, role
-        insert_query = """
-            INSERT INTO "user" (email, password, "firstName", "lastName", role)
-            VALUES (%s, %s, %s, %s, %s)
+        # Build INSERT query based on available columns
+        insert_cols = ['email', 'password', '"firstName"', '"lastName"']
+        insert_vals = [ADMIN_EMAIL, hashed_password, ADMIN_FIRST_NAME, ADMIN_LAST_NAME]
+        
+        # Try to add role or globalRole if available
+        if 'role' in columns:
+            insert_cols.append('role')
+            insert_vals.append('global:owner')
+            print("Using 'role' column with value 'global:owner'")
+        elif 'globalRole' in columns:
+            insert_cols.append('"globalRole"')
+            insert_vals.append('owner')
+            print("Using 'globalRole' column with value 'owner'")
+        else:
+            print("WARNING: No role or globalRole column found. User will be created without role assignment.")
+
+        # Build the INSERT query
+        columns_str = ', '.join(insert_cols)
+        placeholders = ', '.join(['%s'] * len(insert_vals))
+
+        insert_query = f"""
+            INSERT INTO "user" ({columns_str})
+            VALUES ({placeholders})
             RETURNING id
         """
 
-        cur.execute(
-            insert_query,
-            (ADMIN_EMAIL, hashed_password, ADMIN_FIRST_NAME, ADMIN_LAST_NAME, 'global:owner')
-        )
+        cur.execute(insert_query, insert_vals)
 
         user_id = cur.fetchone()[0]
         conn.commit()
@@ -157,7 +188,7 @@ def main():
                 password=DB_PASSWORD
             )
             cur = conn.cursor()
-            # Check if user table exists and has the role column
+            # Check if user table exists
             cur.execute("""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
@@ -167,21 +198,11 @@ def main():
             table_exists = cur.fetchone()[0]
             
             if table_exists:
-                # Check if role column exists
-                cur.execute("""
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.columns 
-                        WHERE table_name = 'user' AND column_name = 'role'
-                    )
-                """)
-                role_column_exists = cur.fetchone()[0]
-                
-                if role_column_exists:
-                    print("Database schema is ready with role column!")
-                    schema_ready = True
-                    cur.close()
-                    conn.close()
-                    break
+                print("Database schema is ready!")
+                schema_ready = True
+                cur.close()
+                conn.close()
+                break
             
             cur.close()
             conn.close()
