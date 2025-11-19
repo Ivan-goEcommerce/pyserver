@@ -97,16 +97,16 @@ def create_owner_account():
         hashed_password = hash_password(ADMIN_PASSWORD)
         print(f"Creating owner account for {ADMIN_EMAIL}...")
 
-        # Insert only required columns: email, password, firstName, lastName
+        # Insert required columns: email, password, firstName, lastName, role
         insert_query = """
-            INSERT INTO "user" (email, password, "firstName", "lastName")
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO "user" (email, password, "firstName", "lastName", role)
+            VALUES (%s, %s, %s, %s, %s)
             RETURNING id
         """
 
         cur.execute(
             insert_query,
-            (ADMIN_EMAIL, hashed_password, ADMIN_FIRST_NAME, ADMIN_LAST_NAME)
+            (ADMIN_EMAIL, hashed_password, ADMIN_FIRST_NAME, ADMIN_LAST_NAME, 'global:owner')
         )
 
         user_id = cur.fetchone()[0]
@@ -141,11 +141,12 @@ def main():
     if not wait_for_database():
         sys.exit(1)
 
-    # Wait for n8n to initialize the database schema
+    # Wait for n8n to initialize the database schema and be ready
     print("Waiting for n8n to initialize database schema...")
-    max_schema_wait = 60  # Wait up to 60 seconds for schema
-    schema_wait_interval = 5
+    max_schema_wait = 120  # Wait up to 120 seconds for schema
+    schema_wait_interval = 3
     
+    schema_ready = False
     for i in range(max_schema_wait // schema_wait_interval):
         try:
             conn = psycopg2.connect(
@@ -156,25 +157,43 @@ def main():
                 password=DB_PASSWORD
             )
             cur = conn.cursor()
+            # Check if user table exists and has the role column
             cur.execute("""
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables 
                     WHERE table_name = 'user'
                 )
             """)
-            if cur.fetchone()[0]:
-                print("Database schema is ready!")
-                cur.close()
-                conn.close()
-                break
+            table_exists = cur.fetchone()[0]
+            
+            if table_exists:
+                # Check if role column exists
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.columns 
+                        WHERE table_name = 'user' AND column_name = 'role'
+                    )
+                """)
+                role_column_exists = cur.fetchone()[0]
+                
+                if role_column_exists:
+                    print("Database schema is ready with role column!")
+                    schema_ready = True
+                    cur.close()
+                    conn.close()
+                    break
+            
             cur.close()
             conn.close()
-        except:
-            pass
+        except Exception as e:
+            print(f"Error checking schema: {e}")
         
-        if i < (max_schema_wait // schema_wait_interval) - 1:
+        if not schema_ready and i < (max_schema_wait // schema_wait_interval) - 1:
             print(f"Schema not ready yet, waiting... ({i+1} attempts)")
             time.sleep(schema_wait_interval)
+    
+    if not schema_ready:
+        print("WARNING: Schema might not be fully ready, but attempting to create user anyway...")
 
     if create_owner_account():
         print("=" * 50)

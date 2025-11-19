@@ -52,6 +52,11 @@ services:
 
       # User Management aktivieren (für Owner-Account)
       - N8N_USER_MANAGEMENT_DISABLED=false
+      
+      # Basic Authentication - automatischer Login beim URL-Aufruf
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=Ivan.Levshyn@go-ecommerce.de
+      - N8N_BASIC_AUTH_PASSWORD=05012005 Ivan
 
       # PostgreSQL Konfiguration
       - DB_TYPE=postgresdb
