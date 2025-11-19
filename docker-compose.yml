@@ -70,30 +70,6 @@ services:
       postgres:
         condition: service_healthy
 
-  # Init Script - Erstellt automatisch Owner-Account
-  n8n-init:
-    build:
-      context: .
-      dockerfile: Dockerfile.init
-    container_name: n8n-init
-    restart: "no"
-    environment:
-      - DB_POSTGRESDB_HOST=postgres
-      - DB_POSTGRESDB_PORT=5432
-      - DB_POSTGRESDB_DATABASE=n8n
-      - DB_POSTGRESDB_USER=n8n
-      - DB_POSTGRESDB_PASSWORD=n8n
-      - N8N_ADMIN_EMAIL=Ivan.Levshyn@go-ecommerce.de
-      - N8N_ADMIN_PASSWORD=05012005 Ivan
-      - N8N_ADMIN_FIRST_NAME=Ivan
-      - N8N_ADMIN_LAST_NAME=Levshyn
-    networks:
-      - n8n_net
-    depends_on:
-      postgres:
-        condition: service_healthy
-      n8n:
-        condition: service_started
 
 # Persistente Volumes
 volumes:
