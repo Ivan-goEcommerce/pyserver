@@ -22,6 +22,8 @@ services:
       - GENERIC_TIMEZONE=Europe/Berlin
       - TZ=Europe/Berlin
       - N8N_USER_MANAGEMENT_DISABLED=true
+      - N8N_HOST=n8n-ivan.go-ecommerce.de
+      - N8N_PROTOCOL=https
     volumes:
       - n8n_data:/home/node/.n8n
     networks:
