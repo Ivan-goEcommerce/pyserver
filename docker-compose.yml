@@ -1,6 +1,4 @@
 services:
-
-  # Reverse Proxy (Caddy)
   caddy:
     image: caddy:latest
     container_name: caddy
@@ -16,35 +14,23 @@ services:
     depends_on:
       - n8n
 
-  # n8n Service
   n8n:
     image: docker.n8n.io/n8nio/n8n:latest
     container_name: n8n
     restart: unless-stopped
-
     environment:
       - GENERIC_TIMEZONE=Europe/Berlin
       - TZ=Europe/Berlin
-
-      # WICHTIG: externe URL für korrekte Redirects / OAuth
-      - N8N_HOST=n8n-ivan.go-ecommerce.de
-      - N8N_PROTOCOL=https
-      - N8N_SECURE_COOKIE=true
-
-      # SQLite wird standardmäßig verwendet (keine DB-Konfiguration nötig)
-
+      - N8N_USER_MANAGEMENT_DISABLED=true
     volumes:
       - n8n_data:/home/node/.n8n
-
     networks:
       - n8n_net
 
-# Persistente Volumes
 volumes:
   n8n_data:
   caddy_data:
 
-# Internes Netzwerk
 networks:
   n8n_net:
     driver: bridge
