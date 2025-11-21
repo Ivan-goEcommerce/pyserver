@@ -1,423 +1,174 @@
 #!/usr/bin/env python3
 """
-Script to create n8n owner account in PostgreSQL database.
-Waits for n8n to initialize its database schema, then inserts the owner account.
+Create n8n owner user using n8n CLI.
+This script integrates with other Python modules for notifications and webhooks.
 """
 
 import os
+import subprocess
 import sys
 import time
-import secrets
-import string
-import requests
-import psycopg2
-import bcrypt
-from psycopg2 import sql
-
-# Database connection parameters
-DB_HOST = os.getenv('DB_POSTGRESDB_HOST', 'postgres')
-DB_PORT = int(os.getenv('DB_POSTGRESDB_PORT', 5432))
-DB_NAME = os.getenv('DB_POSTGRESDB_DATABASE', 'n8n')
-DB_USER = os.getenv('DB_POSTGRESDB_USER', 'n8n')
-DB_PASSWORD = os.getenv('DB_POSTGRESDB_PASSWORD', 'n8n')
-
-# Owner account details
-OWNER_EMAIL = os.getenv('N8N_DEFAULT_EMAIL', 'admin@example.com')
-OWNER_FIRST_NAME = os.getenv('N8N_DEFAULT_FIRST_NAME', 'Admin')
-OWNER_LAST_NAME = os.getenv('N8N_DEFAULT_LAST_NAME', 'User')
-N8N_INSTANCE_URL = os.getenv('N8N_INSTANCE_URL', 'http://n8n-ivan.go-ecommerce.de/')
-# Password will be auto-generated (16 characters with uppercase, lowercase, digit, special char)
-
-# Agentic webhook configuration
-AGENTIC_ACCESS_KEY = os.getenv('AGENTIC_ACCESS_KEY', '')
-AGENTIC_APPLICATION = os.getenv('AGENTIC_APPLICATION', '')
-
-MAX_RETRIES = 30
-RETRY_DELAY = 2
 
 
-def generate_secure_password(length=16):
+def wait_for_n8n(max_retries=30, delay=2):
     """
-    Generate a secure random password with:
-    - Uppercase letters
-    - Lowercase letters
-    - Digits
-    - Special characters
+    Wait for n8n to be ready by checking if n8n CLI can list users.
+    
+    Args:
+        max_retries (int): Maximum number of retry attempts
+        delay (int): Delay between retries in seconds
+    
+    Returns:
+        bool: True if n8n is ready, False otherwise
     """
-    # Define character sets
-    uppercase = string.ascii_uppercase
-    lowercase = string.ascii_lowercase
-    digits = string.digits
-    special = "!@#$%^&*()_+-=[]{}|;:,.<>?"
-    
-    # Ensure at least one character from each category
-    password_chars = [
-        secrets.choice(uppercase),
-        secrets.choice(lowercase),
-        secrets.choice(digits),
-        secrets.choice(special)
-    ]
-    
-    # Fill the rest with random characters from all sets
-    all_chars = uppercase + lowercase + digits + special
-    for _ in range(length - 4):
-        password_chars.append(secrets.choice(all_chars))
-    
-    # Shuffle to avoid predictable pattern
-    secrets.SystemRandom().shuffle(password_chars)
-    
-    return ''.join(password_chars)
-
-
-def wait_for_database():
-    """Wait for PostgreSQL database to be ready."""
-    print("Waiting for PostgreSQL database to be ready...")
-    for i in range(MAX_RETRIES):
+    print("Waiting for n8n to be ready...")
+    for i in range(max_retries):
         try:
-            conn = psycopg2.connect(
-                host=DB_HOST,
-                port=DB_PORT,
-                database=DB_NAME,
-                user=DB_USER,
-                password=DB_PASSWORD
+            result = subprocess.run(
+                ['n8n', 'user', 'list'],
+                capture_output=True,
+                timeout=5
             )
-            conn.close()
-            print("Database is ready!")
-            return True
-        except psycopg2.OperationalError as e:
-            if i < MAX_RETRIES - 1:
-                print(f"Database not ready yet, retrying in {RETRY_DELAY} seconds... ({i+1}/{MAX_RETRIES})")
-                time.sleep(RETRY_DELAY)
-            else:
-                print(f"Failed to connect to database: {e}")
-                return False
-    return False
-
-
-def wait_for_n8n_schema():
-    """Wait for n8n to create its database schema (user table)."""
-    print("Waiting for n8n to initialize database schema...")
-    for i in range(MAX_RETRIES):
-        try:
-            conn = psycopg2.connect(
-                host=DB_HOST,
-                port=DB_PORT,
-                database=DB_NAME,
-                user=DB_USER,
-                password=DB_PASSWORD
-            )
-            cursor = conn.cursor()
-            
-            # Check if user table exists
-            cursor.execute("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_schema = 'public' 
-                    AND table_name = 'user'
-                );
-            """)
-            
-            table_exists = cursor.fetchone()[0]
-            cursor.close()
-            conn.close()
-            
-            if table_exists:
-                print("n8n schema is ready!")
+            if result.returncode == 0:
+                print("n8n is ready!")
                 return True
-            else:
-                if i < MAX_RETRIES - 1:
-                    print(f"Schema not ready yet, retrying in {RETRY_DELAY} seconds... ({i+1}/{MAX_RETRIES})")
-                    time.sleep(RETRY_DELAY)
-                else:
-                    print("Timeout waiting for n8n schema to be created")
-                    return False
-        except psycopg2.Error as e:
-            if i < MAX_RETRIES - 1:
-                print(f"Error checking schema, retrying in {RETRY_DELAY} seconds... ({i+1}/{MAX_RETRIES})")
-                time.sleep(RETRY_DELAY)
-            else:
-                print(f"Failed to check schema: {e}")
-                return False
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+        
+        if i < max_retries - 1:
+            print(f"n8n is not ready yet, waiting... (attempt {i+1}/{max_retries})")
+            time.sleep(delay)
+    
+    print("n8n did not become ready in time")
     return False
 
 
-def hash_password(password):
-    """Hash password using bcrypt (same as n8n uses)."""
-    # n8n uses bcrypt with salt rounds 10
-    salt = bcrypt.gensalt(rounds=10)
-    hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
-    return hashed.decode('utf-8')
-
-
-def check_user_exists(cursor, email):
-    """Check if user with given email already exists."""
-    cursor.execute(
-        sql.SQL("SELECT COUNT(*) FROM {} WHERE email = %s").format(
-            sql.Identifier('user')
-        ),
-        (email,)
-    )
-    return cursor.fetchone()[0] > 0
-
-
-def remove_api_from_url(url):
+def user_exists(email):
     """
-    Remove /api from URL if present.
-    Examples:
-    - https://otn.go-ecommerce.de/api/notes/... -> https://otn.go-ecommerce.de/notes/...
-    - https://otn.go-ecommerce.de/api-docs.php -> https://otn.go-ecommerce.de/-docs.php (unchanged if no /api/)
-    """
-    if "/api/" in url:
-        # Replace /api/ with /
-        url = url.replace("/api/", "/")
-    elif url.endswith("/api"):
-        # Remove /api at the end
-        url = url[:-4]
-    elif "/api" in url and not url.endswith("/api"):
-        # Handle /api followed by something (like /api/notes or /api?param=value)
-        # Replace first occurrence of /api with empty string
-        url = url.replace("/api", "", 1)
-    return url
-
-
-def send_otn_notification(email, password):
-    """
-    Send notification to OTN API with user credentials.
-    Returns tuple (credential_url, access_key, application) if successful, (None, None, None) otherwise.
-    """
-    otn_url = "https://otn.go-ecommerce.de/api-docs.php"
+    Check if a user with the given email already exists.
     
-    # Remove /api from URL if present
-    otn_url_cleaned = remove_api_from_url(otn_url)
+    Args:
+        email (str): Email address to check
     
-    message = f"benutzername: {email}\nKennwort: {password}"
-    payload = {"message": message}
-    
+    Returns:
+        bool: True if user exists, False otherwise
+    """
     try:
-        print(f"Sending notification to OTN API: {otn_url_cleaned}")
-        response = requests.post(
-            otn_url_cleaned,
-            json=payload,
-            headers={'Content-Type': 'application/json'},
+        result = subprocess.run(
+            ['n8n', 'user', 'list'],
+            capture_output=True,
+            text=True,
             timeout=10
         )
-        
-        if response.status_code == 200:
-            print(f"Successfully sent notification to OTN API")
-            
-            # Try to extract credential URL from response
-            credential_url = None
-            access_key = None
-            application = None
-            
-            try:
-                response_data = response.json()
-                # Try different possible fields in the response
-                if 'url' in response_data:
-                    credential_url = response_data['url']
-                elif 'credential_url' in response_data:
-                    credential_url = response_data['credential_url']
-                elif 'link' in response_data:
-                    credential_url = response_data['link']
-                elif isinstance(response_data, str):
-                    # Response might be a URL string
-                    credential_url = response_data
-                
-                # Try to extract header values from response
-                if 'X-Access-Key' in response_data or 'access_key' in response_data:
-                    access_key = response_data.get('X-Access-Key') or response_data.get('access_key')
-                if 'X-Application' in response_data or 'application' in response_data:
-                    application = response_data.get('X-Application') or response_data.get('application')
-                    
-            except:
-                # If response is not JSON, check if it's a URL in text
-                response_text = response.text.strip()
-                if response_text.startswith('http'):
-                    credential_url = response_text
-            
-            # Check response headers for access key and application
-            if not access_key:
-                access_key = response.headers.get('X-Access-Key') or response.headers.get('x-access-key')
-            if not application:
-                application = response.headers.get('X-Application') or response.headers.get('x-application')
-            
-            # If no URL found in response, use the OTN base URL
-            if not credential_url:
-                credential_url = otn_url_cleaned
-            
-            # Remove /api from credential URL if present
-            credential_url = remove_api_from_url(credential_url)
-            
-            return (credential_url, access_key, application)
-        else:
-            print(f"OTN API returned status {response.status_code}: {response.text}")
-            return (None, None, None)
-            
-    except requests.exceptions.RequestException as e:
-        print(f"Error sending notification to OTN API: {e}")
-        return (None, None, None)
+        if result.returncode == 0:
+            return email in result.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        print(f"Error checking if user exists: {e}")
+    
+    return False
 
 
-def send_agentic_webhook(first_name, last_name, email, n8n_url, credential_url, access_key=None, application=None):
-    """Send credentials to agentic webhook."""
-    agentic_url = "https://agentic.go-ecommerce.de/webhook/v1/credentials"
+def create_user(email, password, first_name, last_name):
+    """
+    Create a new n8n user using the n8n CLI.
     
-    # Use provided values or fall back to environment variables
-    access_key = access_key or AGENTIC_ACCESS_KEY
-    application = application or AGENTIC_APPLICATION
+    Args:
+        email (str): User email address
+        password (str): User password
+        first_name (str): User's first name
+        last_name (str): User's last name
     
-    if not access_key or not application:
-        print("Warning: X-Access-Key or X-Application not provided. Skipping agentic webhook.")
-        return False
-    
-    headers = {
-        "X-Access-Key": access_key,
-        "X-Application": application,
-        "Content-Type": "application/json"
-    }
-    
-    payload = {
-        "first_name": first_name,
-        "name": last_name,
-        "mail": email,
-        "n8n_instanceurl": n8n_url.rstrip('/') + '/',  # Ensure trailing slash
-        "credentials": [
-            {
-                "credential_url": credential_url
-            }
-        ]
-    }
-    
+    Returns:
+        bool: True if user was created successfully, False otherwise
+    """
     try:
-        print(f"Sending credentials to agentic webhook: {agentic_url}")
-        response = requests.post(
-            agentic_url,
-            json=payload,
-            headers=headers,
-            timeout=10
+        print(f"Creating owner user: {email}")
+        result = subprocess.run(
+            [
+                'n8n', 'user', 'create',
+                '--email', email,
+                '--password', password,
+                '--firstName', first_name,
+                '--lastName', last_name
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30
         )
         
-        if response.status_code in [200, 201]:
-            print(f"Successfully sent credentials to agentic webhook")
+        if result.returncode == 0:
+            print("Owner user created successfully!")
             return True
         else:
-            print(f"Agentic webhook returned status {response.status_code}: {response.text}")
+            print(f"Error creating user: {result.stderr}")
             return False
             
-    except requests.exceptions.RequestException as e:
-        print(f"Error sending credentials to agentic webhook: {e}")
+    except subprocess.TimeoutExpired:
+        print("Timeout while creating user")
         return False
-
-
-def create_owner_account():
-    """Create the owner account in the database."""
-    generated_password = None
-    
-    try:
-        conn = psycopg2.connect(
-            host=DB_HOST,
-            port=DB_PORT,
-            database=DB_NAME,
-            user=DB_USER,
-            password=DB_PASSWORD
-        )
-        cursor = conn.cursor()
-        
-        # Check if user already exists
-        if check_user_exists(cursor, OWNER_EMAIL):
-            print(f"User with email {OWNER_EMAIL} already exists. Skipping creation.")
-            cursor.close()
-            conn.close()
-            return True
-        
-        # Generate secure password automatically
-        generated_password = generate_secure_password(16)
-        print(f"Generated secure password (16 characters)")
-        
-        # Hash the password
-        hashed_password = hash_password(generated_password)
-        
-        # Insert the owner account
-        print(f"Creating owner account for {OWNER_EMAIL}...")
-        cursor.execute(
-            sql.SQL("""
-                INSERT INTO {} (email, password, "firstName", "lastName", role, "createdAt", "updatedAt")
-                VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
-            """).format(
-                sql.Identifier('user')
-            ),
-            (
-                OWNER_EMAIL,
-                hashed_password,
-                OWNER_FIRST_NAME,
-                OWNER_LAST_NAME,
-                'global:owner'
-            )
-        )
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
-        
-        print("=" * 60)
-        print("SUCCESS: Owner account created!")
-        print("=" * 60)
-        print(f"Email:    {OWNER_EMAIL}")
-        print(f"Password: {generated_password}")
-        print("=" * 60)
-        print("IMPORTANT: Save this password! It will not be shown again.")
-        print("=" * 60)
-        
-        # Send notification to OTN API and get credential URL and header values
-        credential_url = None
-        access_key = None
-        application = None
-        
-        if generated_password:
-            credential_url, access_key, application = send_otn_notification(OWNER_EMAIL, generated_password)
-            
-            # Send credentials to agentic webhook
-            if credential_url:
-                send_agentic_webhook(
-                    OWNER_FIRST_NAME,
-                    OWNER_LAST_NAME,
-                    OWNER_EMAIL,
-                    N8N_INSTANCE_URL,
-                    credential_url,
-                    access_key=access_key,
-                    application=application
-                )
-            else:
-                print("Warning: Could not get credential URL from OTN API. Skipping agentic webhook.")
-        
-        return True
-        
-    except psycopg2.Error as e:
-        print(f"Error creating owner account: {e}")
+    except FileNotFoundError:
+        print("n8n CLI not found. Make sure n8n is installed and in PATH.")
+        return False
+    except Exception as e:
+        print(f"Unexpected error creating user: {e}")
         return False
 
 
 def main():
-    """Main function."""
-    print("Starting n8n owner account creation script...")
+    """Main function to create n8n owner user."""
+    # Get environment variables
+    email = os.getenv('N8N_DEFAULT_EMAIL')
+    password = os.getenv('N8N_DEFAULT_PASSWORD', 'changeme')
+    first_name = os.getenv('N8N_DEFAULT_FIRST_NAME', 'Admin')
+    last_name = os.getenv('N8N_DEFAULT_LAST_NAME', 'User')
     
-    # Step 1: Wait for database
-    if not wait_for_database():
-        print("Failed to connect to database. Exiting.")
+    # Validate required environment variables
+    if not email:
+        print("Error: N8N_DEFAULT_EMAIL environment variable is required")
         sys.exit(1)
     
-    # Step 2: Wait for n8n schema
-    if not wait_for_n8n_schema():
-        print("Failed to detect n8n schema. Exiting.")
+    # Wait for n8n to be ready
+    if not wait_for_n8n():
+        print("Failed to connect to n8n. Exiting.")
         sys.exit(1)
     
-    # Step 3: Create owner account
-    if not create_owner_account():
-        print("Failed to create owner account. Exiting.")
-        sys.exit(1)
+    # Check if user already exists
+    if user_exists(email):
+        print(f"Owner user {email} already exists, skipping creation.")
+        sys.exit(0)
     
-    print("Script completed successfully!")
-    sys.exit(0)
+    # Create the user
+    if create_user(email, password, first_name, last_name):
+        # Here you can integrate with other Python modules if needed
+        # For example, send notifications or webhooks
+        n8n_url = os.getenv('N8N_INSTANCE_URL')
+        if n8n_url:
+            # Import and use other modules if needed
+            try:
+                from otn_notification import send_otn_notification
+                from agentic_webhook import send_agentic_webhook
+                
+                # Send OTN notification
+                credential_url = send_otn_notification(email, password)
+                
+                # Send agentic webhook if credential URL was received
+                if credential_url:
+                    send_agentic_webhook(
+                        first_name=first_name,
+                        last_name=last_name,
+                        email=email,
+                        n8n_url=n8n_url,
+                        credential_url=credential_url
+                    )
+            except ImportError as e:
+                print(f"Note: Could not import notification modules: {e}")
+            except Exception as e:
+                print(f"Note: Error sending notifications: {e}")
+        
+        sys.exit(0)
+    else:
+        print("Failed to create owner user.")
+        sys.exit(1)
 
 
 if __name__ == '__main__':
