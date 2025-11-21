@@ -156,7 +156,7 @@ def create_owner_user():
         'password': os.getenv('POSTGRES_PASSWORD', 'n8n')
     }
     
-    print(f"Creating owner user: {email}")
+    print(f"Checking for owner user: {email}")
     print(f"First Name: {first_name}, Last Name: {last_name}")
     
     # Wait for database to be ready
@@ -180,6 +180,9 @@ def create_owner_user():
             cursor.close()
             conn.close()
             return
+        
+        # User doesn't exist, proceed with creation
+        print(f"Creating owner user: {email}")
         
         # Hash the password using bcrypt (same as n8n uses)
         hashed_password = hash_password(password)
