@@ -1,23 +1,6 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: n8n-postgres
-    restart: unless-stopped
-    environment:
-      - POSTGRES_DB=${POSTGRES_DB:-n8n}
-      - POSTGRES_USER=${POSTGRES_USER:-n8n}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-n8n}
-      - PGDATA=/var/lib/postgresql/data/pgdata
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    networks:
-      - n8n_net
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-n8n} -d ${POSTGRES_DB:-n8n}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
 
+  # Reverse Proxy (Caddy)
   caddy:
     image: caddy:latest
     container_name: caddy
@@ -33,29 +16,61 @@ services:
     depends_on:
       - n8n
 
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=n8n
+      - POSTGRES_PASSWORD=n8n
+      - POSTGRES_DB=n8n
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - n8n_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U n8n"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # n8n Service
   n8n:
     image: docker.n8n.io/n8nio/n8n:latest
     container_name: n8n
     restart: unless-stopped
+
     environment:
       - GENERIC_TIMEZONE=Europe/Berlin
       - TZ=Europe/Berlin
+
+      # WICHTIG: externe URL für korrekte Redirects / OAuth
       - N8N_HOST=n8n-ivan.go-ecommerce.de
       - N8N_PROTOCOL=https
+      - N8N_SECURE_COOKIE=true
+
+      # User Management aktiviert - Benutzer wird automatisch erstellt und eingeloggt
+      # - N8N_USER_MANAGEMENT_DISABLED=true
+
+      # PostgreSQL Konfiguration
       - DB_TYPE=postgresdb
       - DB_POSTGRESDB_HOST=postgres
       - DB_POSTGRESDB_PORT=5432
-      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB:-n8n}
-      - DB_POSTGRESDB_USER=${POSTGRES_USER:-n8n}
-      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD:-n8n}
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=n8n
+      - DB_POSTGRESDB_PASSWORD=n8n
+
     volumes:
       - n8n_data:/home/node/.n8n
+
     networks:
       - n8n_net
     depends_on:
       postgres:
         condition: service_healthy
 
+  # Init Script - Erstellt automatisch einen Benutzer und loggt ihn ein
   n8n-init:
     build:
       context: .
@@ -63,20 +78,16 @@ services:
     container_name: n8n-init
     restart: "no"
     environment:
-      - N8N_DEFAULT_EMAIL=Ivan.Levshyn@go-ecommerce.de
-      - N8N_DEFAULT_FIRST_NAME=Ivan
-      - N8N_DEFAULT_LAST_NAME=Levshyn
-      - N8N_DEFAULT_PASSWORD=${N8N_DEFAULT_PASSWORD:-changeme}
-      - N8N_INSTANCE_URL=${N8N_INSTANCE_URL:-https://n8n-ivan.go-ecommerce.de/}
-      - AGENTIC_ACCESS_KEY=${AGENTIC_ACCESS_KEY:-aG7pL9xQ2vR4cT1w#Z8mK3bN6yH0fD5-}
-      - AGENTIC_APPLICATION=${AGENTIC_APPLICATION:-go-eCommerce-n8n-hosting}
-      - POSTGRES_DB=${POSTGRES_DB:-n8n}
-      - POSTGRES_USER=${POSTGRES_USER:-n8n}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-n8n}
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-    volumes:
-      - n8n_data:/home/node/.n8n
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=n8n
+      - DB_POSTGRESDB_PASSWORD=n8n
+      - N8N_HOST=n8n
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - N8N_DEFAULT_EMAIL=admin@n8n.local
+      - N8N_DEFAULT_PASSWORD=admin
     networks:
       - n8n_net
     depends_on:
@@ -85,11 +96,13 @@ services:
       n8n:
         condition: service_started
 
+# Persistente Volumes
 volumes:
   n8n_data:
   caddy_data:
   postgres_data:
 
+# Internes Netzwerk
 networks:
   n8n_net:
     driver: bridge
