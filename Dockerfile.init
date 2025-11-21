@@ -1,12 +1,17 @@
-FROM docker.n8n.io/n8nio/n8n:latest
+FROM python:3.11-slim
 
 WORKDIR /app
 
+# Install PostgreSQL client libraries for psycopg2
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libpq5 \
+        && \
+    rm -rf /var/lib/apt/lists/*
+
 # Install Python dependencies for the initialization script
 COPY requirements-init.txt ./
-RUN apk add --no-cache python3 py3-pip python3-dev gcc musl-dev libffi-dev && \
-    pip3 install --no-cache-dir -r requirements-init.txt && \
-    apk del gcc musl-dev libffi-dev python3-dev
+RUN pip3 install --no-cache-dir -r requirements-init.txt
 
 # Copy the Python script and required modules
 COPY create_owner.py ./
