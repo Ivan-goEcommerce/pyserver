@@ -1,12 +1,14 @@
-FROM docker.n8n.io/n8nio/n8n:latest
+FROM python:3.11-slim
 
-# Install wget for health checks
-RUN apk add --no-cache wget
+WORKDIR /app
 
-COPY create_owner.sh /create_owner.sh
-RUN chmod +x /create_owner.sh
+# Install dependencies
+COPY requirements-init.txt ./
+RUN pip install --no-cache-dir -r requirements-init.txt
 
-# Set working directory to n8n data directory
-WORKDIR /home/node/.n8n
+# Copy the script
+COPY create_owner.py ./
 
-CMD ["/create_owner.sh"]
+# Run the script
+CMD ["python", "create_owner.py"]
+
