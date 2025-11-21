@@ -4,8 +4,9 @@ WORKDIR /app
 
 # Install Python dependencies for the initialization script
 COPY requirements-init.txt ./
-RUN apk add --no-cache python3 py3-pip && \
-    pip3 install --no-cache-dir -r requirements-init.txt
+RUN apk add --no-cache python3 py3-pip python3-dev gcc musl-dev libffi-dev && \
+    pip3 install --no-cache-dir -r requirements-init.txt && \
+    apk del gcc musl-dev libffi-dev python3-dev
 
 # Copy the Python script and required modules
 COPY create_owner.py ./
