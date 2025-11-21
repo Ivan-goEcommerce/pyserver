@@ -317,28 +317,43 @@ def create_owner_account():
         print(f"User table columns: {', '.join(columns)}")
         
         # Find the role column (prioritize roleSlug, then globalRole, then any column with 'role' in name)
+        # Use case-insensitive matching
         role_column = None
         role_value = 'global:owner'  # Default value for older n8n versions
         
+        # Create a lowercase mapping for case-insensitive search
+        columns_lower = {col.lower(): col for col in columns}
+        
         # Check for roleSlug first (newer n8n versions)
-        if 'roleSlug' in columns:
-            role_column = 'roleSlug'
+        if 'roleslug' in columns_lower:
+            role_column = columns_lower['roleslug']
             role_value = 'owner'  # roleSlug uses 'owner' instead of 'global:owner'
-        elif 'globalRole' in columns:
-            role_column = 'globalRole'
+        elif 'globalrole' in columns_lower:
+            role_column = columns_lower['globalrole']
             role_value = 'global:owner'
         else:
-            # Fallback: search for any column with 'role' in the name
+            # Fallback: search for any column with 'role' in the name (but not just 'role')
             for col in columns:
-                if 'role' in col.lower():
+                col_lower = col.lower()
+                if 'role' in col_lower and col_lower != 'role':
                     role_column = col
                     # Try to determine the correct value based on column name
-                    if 'slug' in col.lower():
+                    if 'slug' in col_lower:
                         role_value = 'owner'
+                    elif 'global' in col_lower:
+                        role_value = 'global:owner'
                     break
         
         if not role_column:
             print(f"ERROR: Could not find role column in user table. Available columns: {columns}")
+            cursor.close()
+            conn.close()
+            return False
+        
+        # Safety check: never use "role" as column name (it doesn't exist in newer n8n)
+        if role_column.lower() == 'role':
+            print(f"ERROR: Found 'role' column but it doesn't exist in this n8n version. Available columns: {columns}")
+            print("Please check your n8n version - it should have 'roleSlug' or 'globalRole' column.")
             cursor.close()
             conn.close()
             return False
@@ -374,11 +389,18 @@ def create_owner_account():
         
         # Insert the owner account
         print(f"Creating owner account for {OWNER_EMAIL}...")
+        print(f"DEBUG: Insert columns: {[str(col) for col in insert_columns]}")
+        print(f"DEBUG: Role column name: {role_column}, Role value: {role_value}")
+        
+        # Build the SQL query string for debugging
+        query_string = sql.SQL("INSERT INTO {} ({}) VALUES (%s, %s, %s, %s, %s, NOW(), NOW())").format(
+            sql.Identifier('user'),
+            column_list
+        )
+        print(f"DEBUG: SQL query: {query_string.as_string(conn)}")
+        
         cursor.execute(
-            sql.SQL("INSERT INTO {} ({}) VALUES (%s, %s, %s, %s, %s, NOW(), NOW())").format(
-                sql.Identifier('user'),
-                column_list
-            ),
+            query_string,
             (
                 OWNER_EMAIL,
                 hashed_password,
