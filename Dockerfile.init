@@ -1,24 +1,12 @@
-FROM python:3.11-slim
+FROM docker.n8n.io/n8nio/n8n:latest
 
-WORKDIR /app
+# Install wget for health checks
+RUN apk add --no-cache wget
 
-# Install PostgreSQL client libraries for psycopg2
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        libpq5 \
-        && \
-    rm -rf /var/lib/apt/lists/*
+COPY create_owner.sh /create_owner.sh
+RUN chmod +x /create_owner.sh
 
-# Install Python dependencies for the initialization script
-COPY requirements-init.txt ./
-RUN pip3 install --no-cache-dir -r requirements-init.txt
+# Set working directory to n8n data directory
+WORKDIR /home/node/.n8n
 
-# Copy the Python script and required modules
-COPY create_owner.py ./
-COPY password_utils.py ./
-COPY otn_notification.py ./
-COPY agentic_webhook.py ./
-
-# Run the script
-CMD ["python3", "create_owner.py"]
-
+CMD ["/create_owner.sh"]
