@@ -316,12 +316,26 @@ def create_owner_account():
         columns = get_user_table_columns(cursor)
         print(f"User table columns: {', '.join(columns)}")
         
-        # Find the role column (could be 'role', 'globalRole', etc.)
+        # Find the role column (prioritize roleSlug, then globalRole, then any column with 'role' in name)
         role_column = None
-        for col in columns:
-            if 'role' in col.lower():
-                role_column = col
-                break
+        role_value = 'global:owner'  # Default value for older n8n versions
+        
+        # Check for roleSlug first (newer n8n versions)
+        if 'roleSlug' in columns:
+            role_column = 'roleSlug'
+            role_value = 'owner'  # roleSlug uses 'owner' instead of 'global:owner'
+        elif 'globalRole' in columns:
+            role_column = 'globalRole'
+            role_value = 'global:owner'
+        else:
+            # Fallback: search for any column with 'role' in the name
+            for col in columns:
+                if 'role' in col.lower():
+                    role_column = col
+                    # Try to determine the correct value based on column name
+                    if 'slug' in col.lower():
+                        role_value = 'owner'
+                    break
         
         if not role_column:
             print(f"ERROR: Could not find role column in user table. Available columns: {columns}")
@@ -329,7 +343,7 @@ def create_owner_account():
             conn.close()
             return False
         
-        print(f"Using role column: {role_column}")
+        print(f"Using role column: {role_column} with value: {role_value}")
         
         # Check if user already exists
         if check_user_exists(cursor, OWNER_EMAIL):
@@ -370,7 +384,7 @@ def create_owner_account():
                 hashed_password,
                 OWNER_FIRST_NAME,
                 OWNER_LAST_NAME,
-                'global:owner'
+                role_value
             )
         )
         
