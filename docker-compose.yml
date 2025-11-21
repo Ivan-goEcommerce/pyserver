@@ -12,7 +12,7 @@ services:
     networks:
       - n8n_net
     depends_on:
-      - n8n
+      - auto-login-proxy
 
   n8n:
     image: docker.n8n.io/n8nio/n8n:latest
@@ -21,15 +21,52 @@ services:
     environment:
       - GENERIC_TIMEZONE=Europe/Berlin
       - TZ=Europe/Berlin
-      - N8N_USER_MANAGEMENT_DISABLED=true
       - N8N_HOST=n8n-ivan.go-ecommerce.de
       - N8N_PROTOCOL=https
-      - N8N_BASIC_AUTH_ACTIVE=false
-      - N8N_SKIP_OWNER_SETUP=true
     volumes:
       - n8n_data:/home/node/.n8n
     networks:
       - n8n_net
+
+  n8n-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.init
+    container_name: n8n-init
+    restart: "no"
+    environment:
+      - N8N_DEFAULT_EMAIL=Ivan.Levshyn@go-ecommerce.de
+      - N8N_DEFAULT_PASSWORD=05012005 Ivan
+      - N8N_DEFAULT_FIRST_NAME=Ivan
+      - N8N_DEFAULT_LAST_NAME=Levshyn
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - n8n_net
+    depends_on:
+      n8n:
+        condition: service_started
+
+  auto-login-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.proxy
+    container_name: auto-login-proxy
+    restart: unless-stopped
+    environment:
+      - N8N_HOST=n8n
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - N8N_DEFAULT_EMAIL=Ivan.Levshyn@go-ecommerce.de
+      - N8N_DEFAULT_PASSWORD=05012005 Ivan
+      - PROXY_PORT=8080
+    networks:
+      - n8n_net
+    depends_on:
+      n8n:
+        condition: service_started
+      n8n-init:
+        condition: service_completed_successfully
 
 volumes:
   n8n_data:

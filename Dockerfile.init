@@ -1,0 +1,12 @@
+FROM docker.n8n.io/n8nio/n8n:latest
+
+# Install wget for health checks
+RUN apk add --no-cache wget
+
+COPY create_owner.sh /create_owner.sh
+RUN chmod +x /create_owner.sh
+
+# Set working directory to n8n data directory
+WORKDIR /home/node/.n8n
+
+CMD ["/create_owner.sh"]
