@@ -1,6 +1,4 @@
-# Ersetzt <DOMAIN> durch Ihre URL
 n8n-ivan.go-ecommerce.de {
-    # Wir leiten intern an den n8n Service-Namen (nicht an die IP!) weiter
     reverse_proxy n8n:5678
 }
 

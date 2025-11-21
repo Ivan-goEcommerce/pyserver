@@ -1,4 +1,22 @@
 services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=n8n
+      - POSTGRES_PASSWORD=n8n
+      - POSTGRES_DB=n8n
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - n8n_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U n8n"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   caddy:
     image: caddy:latest
     container_name: caddy
@@ -12,7 +30,7 @@ services:
     networks:
       - n8n_net
     depends_on:
-      - auto-login-proxy
+      - n8n
 
   n8n:
     image: docker.n8n.io/n8nio/n8n:latest
@@ -23,10 +41,19 @@ services:
       - TZ=Europe/Berlin
       - N8N_HOST=n8n-ivan.go-ecommerce.de
       - N8N_PROTOCOL=https
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=n8n
+      - DB_POSTGRESDB_PASSWORD=n8n
     volumes:
       - n8n_data:/home/node/.n8n
     networks:
       - n8n_net
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   n8n-init:
     build:
@@ -36,41 +63,29 @@ services:
     restart: "no"
     environment:
       - N8N_DEFAULT_EMAIL=Ivan.Levshyn@go-ecommerce.de
-      - N8N_DEFAULT_PASSWORD=05012005 Ivan
       - N8N_DEFAULT_FIRST_NAME=Ivan
       - N8N_DEFAULT_LAST_NAME=Levshyn
-    volumes:
-      - n8n_data:/home/node/.n8n
+      - N8N_INSTANCE_URL=http://n8n-ivan.go-ecommerce.de/
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=n8n
+      - DB_POSTGRESDB_PASSWORD=n8n
+      # Optional: Set these if not provided by OTN API response
+      # - AGENTIC_ACCESS_KEY=your_access_key
+      # - AGENTIC_APPLICATION=your_application
     networks:
       - n8n_net
     depends_on:
+      postgres:
+        condition: service_healthy
       n8n:
         condition: service_started
-
-  auto-login-proxy:
-    build:
-      context: .
-      dockerfile: Dockerfile.proxy
-    container_name: auto-login-proxy
-    restart: unless-stopped
-    environment:
-      - N8N_HOST=n8n
-      - N8N_PORT=5678
-      - N8N_PROTOCOL=http
-      - N8N_DEFAULT_EMAIL=Ivan.Levshyn@go-ecommerce.de
-      - N8N_DEFAULT_PASSWORD=05012005 Ivan
-      - PROXY_PORT=8080
-    networks:
-      - n8n_net
-    depends_on:
-      n8n:
-        condition: service_started
-      n8n-init:
-        condition: service_completed_successfully
 
 volumes:
   n8n_data:
   caddy_data:
+  postgres_data:
 
 networks:
   n8n_net:
