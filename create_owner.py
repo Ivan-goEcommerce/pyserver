@@ -7,6 +7,9 @@ Waits for n8n to initialize its database schema, then inserts the owner account.
 import os
 import sys
 import time
+import secrets
+import string
+import requests
 import psycopg2
 import bcrypt
 from psycopg2 import sql
@@ -20,12 +23,50 @@ DB_PASSWORD = os.getenv('DB_POSTGRESDB_PASSWORD', 'n8n')
 
 # Owner account details
 OWNER_EMAIL = os.getenv('N8N_DEFAULT_EMAIL', 'admin@example.com')
-OWNER_PASSWORD = os.getenv('N8N_DEFAULT_PASSWORD', 'changeme')
 OWNER_FIRST_NAME = os.getenv('N8N_DEFAULT_FIRST_NAME', 'Admin')
 OWNER_LAST_NAME = os.getenv('N8N_DEFAULT_LAST_NAME', 'User')
+N8N_INSTANCE_URL = os.getenv('N8N_INSTANCE_URL', 'http://n8n-ivan.go-ecommerce.de/')
+# Password will be auto-generated (16 characters with uppercase, lowercase, digit, special char)
+
+# Agentic webhook configuration
+AGENTIC_ACCESS_KEY = os.getenv('AGENTIC_ACCESS_KEY', '')
+AGENTIC_APPLICATION = os.getenv('AGENTIC_APPLICATION', '')
 
 MAX_RETRIES = 30
 RETRY_DELAY = 2
+
+
+def generate_secure_password(length=16):
+    """
+    Generate a secure random password with:
+    - Uppercase letters
+    - Lowercase letters
+    - Digits
+    - Special characters
+    """
+    # Define character sets
+    uppercase = string.ascii_uppercase
+    lowercase = string.ascii_lowercase
+    digits = string.digits
+    special = "!@#$%^&*()_+-=[]{}|;:,.<>?"
+    
+    # Ensure at least one character from each category
+    password_chars = [
+        secrets.choice(uppercase),
+        secrets.choice(lowercase),
+        secrets.choice(digits),
+        secrets.choice(special)
+    ]
+    
+    # Fill the rest with random characters from all sets
+    all_chars = uppercase + lowercase + digits + special
+    for _ in range(length - 4):
+        password_chars.append(secrets.choice(all_chars))
+    
+    # Shuffle to avoid predictable pattern
+    secrets.SystemRandom().shuffle(password_chars)
+    
+    return ''.join(password_chars)
 
 
 def wait_for_database():
@@ -119,8 +160,159 @@ def check_user_exists(cursor, email):
     return cursor.fetchone()[0] > 0
 
 
+def remove_api_from_url(url):
+    """
+    Remove /api from URL if present.
+    Examples:
+    - https://otn.go-ecommerce.de/api/notes/... -> https://otn.go-ecommerce.de/notes/...
+    - https://otn.go-ecommerce.de/api-docs.php -> https://otn.go-ecommerce.de/-docs.php (unchanged if no /api/)
+    """
+    if "/api/" in url:
+        # Replace /api/ with /
+        url = url.replace("/api/", "/")
+    elif url.endswith("/api"):
+        # Remove /api at the end
+        url = url[:-4]
+    elif "/api" in url and not url.endswith("/api"):
+        # Handle /api followed by something (like /api/notes or /api?param=value)
+        # Replace first occurrence of /api with empty string
+        url = url.replace("/api", "", 1)
+    return url
+
+
+def send_otn_notification(email, password):
+    """
+    Send notification to OTN API with user credentials.
+    Returns tuple (credential_url, access_key, application) if successful, (None, None, None) otherwise.
+    """
+    otn_url = "https://otn.go-ecommerce.de/api-docs.php"
+    
+    # Remove /api from URL if present
+    otn_url_cleaned = remove_api_from_url(otn_url)
+    
+    message = f"benutzername: {email}\nKennwort: {password}"
+    payload = {"message": message}
+    
+    try:
+        print(f"Sending notification to OTN API: {otn_url_cleaned}")
+        response = requests.post(
+            otn_url_cleaned,
+            json=payload,
+            headers={'Content-Type': 'application/json'},
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            print(f"Successfully sent notification to OTN API")
+            
+            # Try to extract credential URL from response
+            credential_url = None
+            access_key = None
+            application = None
+            
+            try:
+                response_data = response.json()
+                # Try different possible fields in the response
+                if 'url' in response_data:
+                    credential_url = response_data['url']
+                elif 'credential_url' in response_data:
+                    credential_url = response_data['credential_url']
+                elif 'link' in response_data:
+                    credential_url = response_data['link']
+                elif isinstance(response_data, str):
+                    # Response might be a URL string
+                    credential_url = response_data
+                
+                # Try to extract header values from response
+                if 'X-Access-Key' in response_data or 'access_key' in response_data:
+                    access_key = response_data.get('X-Access-Key') or response_data.get('access_key')
+                if 'X-Application' in response_data or 'application' in response_data:
+                    application = response_data.get('X-Application') or response_data.get('application')
+                    
+            except:
+                # If response is not JSON, check if it's a URL in text
+                response_text = response.text.strip()
+                if response_text.startswith('http'):
+                    credential_url = response_text
+            
+            # Check response headers for access key and application
+            if not access_key:
+                access_key = response.headers.get('X-Access-Key') or response.headers.get('x-access-key')
+            if not application:
+                application = response.headers.get('X-Application') or response.headers.get('x-application')
+            
+            # If no URL found in response, use the OTN base URL
+            if not credential_url:
+                credential_url = otn_url_cleaned
+            
+            # Remove /api from credential URL if present
+            credential_url = remove_api_from_url(credential_url)
+            
+            return (credential_url, access_key, application)
+        else:
+            print(f"OTN API returned status {response.status_code}: {response.text}")
+            return (None, None, None)
+            
+    except requests.exceptions.RequestException as e:
+        print(f"Error sending notification to OTN API: {e}")
+        return (None, None, None)
+
+
+def send_agentic_webhook(first_name, last_name, email, n8n_url, credential_url, access_key=None, application=None):
+    """Send credentials to agentic webhook."""
+    agentic_url = "https://agentic.go-ecommerce.de/webhook/v1/credentials"
+    
+    # Use provided values or fall back to environment variables
+    access_key = access_key or AGENTIC_ACCESS_KEY
+    application = application or AGENTIC_APPLICATION
+    
+    if not access_key or not application:
+        print("Warning: X-Access-Key or X-Application not provided. Skipping agentic webhook.")
+        return False
+    
+    headers = {
+        "X-Access-Key": access_key,
+        "X-Application": application,
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "first_name": first_name,
+        "name": last_name,
+        "mail": email,
+        "n8n_instanceurl": n8n_url.rstrip('/') + '/',  # Ensure trailing slash
+        "credentials": [
+            {
+                "credential_url": credential_url
+            }
+        ]
+    }
+    
+    try:
+        print(f"Sending credentials to agentic webhook: {agentic_url}")
+        response = requests.post(
+            agentic_url,
+            json=payload,
+            headers=headers,
+            timeout=10
+        )
+        
+        if response.status_code in [200, 201]:
+            print(f"Successfully sent credentials to agentic webhook")
+            return True
+        else:
+            print(f"Agentic webhook returned status {response.status_code}: {response.text}")
+            return False
+            
+    except requests.exceptions.RequestException as e:
+        print(f"Error sending credentials to agentic webhook: {e}")
+        return False
+
+
 def create_owner_account():
     """Create the owner account in the database."""
+    generated_password = None
+    
     try:
         conn = psycopg2.connect(
             host=DB_HOST,
@@ -138,8 +330,12 @@ def create_owner_account():
             conn.close()
             return True
         
+        # Generate secure password automatically
+        generated_password = generate_secure_password(16)
+        print(f"Generated secure password (16 characters)")
+        
         # Hash the password
-        hashed_password = hash_password(OWNER_PASSWORD)
+        hashed_password = hash_password(generated_password)
         
         # Insert the owner account
         print(f"Creating owner account for {OWNER_EMAIL}...")
@@ -163,7 +359,37 @@ def create_owner_account():
         cursor.close()
         conn.close()
         
-        print(f"Successfully created owner account for {OWNER_EMAIL}!")
+        print("=" * 60)
+        print("SUCCESS: Owner account created!")
+        print("=" * 60)
+        print(f"Email:    {OWNER_EMAIL}")
+        print(f"Password: {generated_password}")
+        print("=" * 60)
+        print("IMPORTANT: Save this password! It will not be shown again.")
+        print("=" * 60)
+        
+        # Send notification to OTN API and get credential URL and header values
+        credential_url = None
+        access_key = None
+        application = None
+        
+        if generated_password:
+            credential_url, access_key, application = send_otn_notification(OWNER_EMAIL, generated_password)
+            
+            # Send credentials to agentic webhook
+            if credential_url:
+                send_agentic_webhook(
+                    OWNER_FIRST_NAME,
+                    OWNER_LAST_NAME,
+                    OWNER_EMAIL,
+                    N8N_INSTANCE_URL,
+                    credential_url,
+                    access_key=access_key,
+                    application=application
+                )
+            else:
+                print("Warning: Could not get credential URL from OTN API. Skipping agentic webhook.")
+        
         return True
         
     except psycopg2.Error as e:
