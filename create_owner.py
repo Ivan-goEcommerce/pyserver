@@ -104,19 +104,6 @@ def wait_for_n8n_schema():
     return False
 
 
-def get_user_table_columns(cursor):
-    """Get all column names from the user table."""
-    cursor.execute("""
-        SELECT column_name 
-        FROM information_schema.columns 
-        WHERE table_schema = 'public' 
-        AND table_name = 'user'
-        ORDER BY ordinal_position;
-    """)
-    columns = [row[0] for row in cursor.fetchall()]
-    return columns
-
-
 def check_user_exists(cursor, email):
     """Check if user with given email already exists."""
     cursor.execute(
@@ -142,25 +129,11 @@ def create_owner_account():
         )
         cursor = conn.cursor()
         
-        # Check for roleSlug column (required for new n8n versions)
-        columns = get_user_table_columns(cursor)
-        print(f"User table columns: {', '.join(columns)}")
-        
-        # Create a lowercase mapping for case-insensitive search
-        columns_lower = {col.lower(): col for col in columns}
-        
-        # Only support new n8n versions with roleSlug
-        if 'roleslug' not in columns_lower:
-            print(f"ERROR: 'roleSlug' column not found in user table. Available columns: {columns}")
-            print("This script only supports new n8n versions that use 'roleSlug' column.")
-            cursor.close()
-            conn.close()
-            return False
-        
-        role_column = columns_lower['roleslug']
+        # Use roleSlug column directly (required for new n8n versions)
+        role_column = 'roleSlug'
         role_value = 'owner'  # roleSlug uses 'owner' for owner role
         
-        print(f"Using role column: {role_column} with value: {role_value}")
+        print(f"Using roleSlug column with value: {role_value}")
         
         # Check if user already exists
         if check_user_exists(cursor, OWNER_EMAIL):
@@ -192,7 +165,7 @@ def create_owner_account():
         # Insert the owner account
         print(f"Creating owner account for {OWNER_EMAIL}...")
         print(f"DEBUG: Insert columns: {[str(col) for col in insert_columns]}")
-        print(f"DEBUG: Role column name: {role_column}, Role value: {role_value}")
+        print(f"DEBUG: roleSlug column value: {role_value}")
         
         # Build the SQL query string for debugging
         query_string = sql.SQL("INSERT INTO {} ({}) VALUES (%s, %s, %s, %s, %s, NOW(), NOW())").format(

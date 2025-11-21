@@ -7,8 +7,11 @@ COPY requirements-init.txt ./
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements-init.txt
 
-# Copy the script
+# Copy the script and required modules
 COPY create_owner.py ./
+COPY password_utils.py ./
+COPY otn_notification.py ./
+COPY agentic_webhook.py ./
 
 # Run the script
 CMD ["python", "create_owner.py"]
