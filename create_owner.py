@@ -149,6 +149,19 @@ def hash_password(password):
     return hashed.decode('utf-8')
 
 
+def get_user_table_columns(cursor):
+    """Get all column names from the user table."""
+    cursor.execute("""
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_schema = 'public' 
+        AND table_name = 'user'
+        ORDER BY ordinal_position;
+    """)
+    columns = [row[0] for row in cursor.fetchall()]
+    return columns
+
+
 def check_user_exists(cursor, email):
     """Check if user with given email already exists."""
     cursor.execute(
@@ -306,6 +319,27 @@ def create_owner_account():
             conn.close()
             return True
         
+        # Get all columns from user table to find correct column names
+        columns = get_user_table_columns(cursor)
+        print(f"Found columns in user table: {', '.join(columns)}")
+        
+        # Map column names (handle different n8n versions)
+        email_col = 'email'
+        password_col = 'password'
+        first_name_col = 'firstName' if 'firstName' in columns else ('first_name' if 'first_name' in columns else None)
+        last_name_col = 'lastName' if 'lastName' in columns else ('last_name' if 'last_name' in columns else None)
+        role_col = None
+        for col in ['globalRole', 'role', 'roles']:
+            if col in columns:
+                role_col = col
+                break
+        
+        created_at_col = 'createdAt' if 'createdAt' in columns else ('created_at' if 'created_at' in columns else None)
+        updated_at_col = 'updatedAt' if 'updatedAt' in columns else ('updated_at' if 'updated_at' in columns else None)
+        
+        if not first_name_col or not last_name_col:
+            raise Exception(f"Could not find firstName/lastName columns. Available columns: {columns}")
+        
         # Generate secure password automatically
         generated_password = generate_secure_password(16)
         print(f"Generated secure password (16 characters)")
@@ -313,23 +347,63 @@ def create_owner_account():
         # Hash the password
         hashed_password = hash_password(generated_password)
         
+        # Build INSERT statement dynamically based on available columns
+        insert_cols = []
+        placeholders = []
+        insert_values = []
+        
+        # Add required columns
+        insert_cols.append(email_col)
+        placeholders.append('%s')
+        insert_values.append(OWNER_EMAIL)
+        
+        insert_cols.append(password_col)
+        placeholders.append('%s')
+        insert_values.append(hashed_password)
+        
+        insert_cols.append(first_name_col)
+        placeholders.append('%s')
+        insert_values.append(OWNER_FIRST_NAME)
+        
+        insert_cols.append(last_name_col)
+        placeholders.append('%s')
+        insert_values.append(OWNER_LAST_NAME)
+        
+        if role_col:
+            insert_cols.append(role_col)
+            placeholders.append('%s')
+            # n8n uses 'global:owner' or just 'owner' depending on version
+            role_value = 'global:owner' if role_col == 'globalRole' else 'owner'
+            insert_values.append(role_value)
+        
+        if created_at_col:
+            insert_cols.append(created_at_col)
+            placeholders.append('NOW()')
+            # No value needed for NOW()
+        
+        if updated_at_col:
+            insert_cols.append(updated_at_col)
+            placeholders.append('NOW()')
+            # No value needed for NOW()
+        
+        # Build column names with proper quoting
+        col_names = []
+        for col in insert_cols:
+            if col in ['firstName', 'lastName', 'createdAt', 'updatedAt', 'globalRole']:
+                col_names.append(f'"{col}"')
+            else:
+                col_names.append(col)
+        
         # Insert the owner account
         print(f"Creating owner account for {OWNER_EMAIL}...")
-        cursor.execute(
-            sql.SQL("""
-                INSERT INTO {} (email, password, "firstName", "lastName", role, "createdAt", "updatedAt")
-                VALUES (%s, %s, %s, %s, %s, NOW(), NOW())
-            """).format(
-                sql.Identifier('user')
-            ),
-            (
-                OWNER_EMAIL,
-                hashed_password,
-                OWNER_FIRST_NAME,
-                OWNER_LAST_NAME,
-                'global:owner'
-            )
-        )
+        print(f"Using columns: {insert_cols}")
+        
+        # Build query
+        col_names_str = ', '.join(col_names)
+        placeholders_str = ', '.join(placeholders)
+        query = f'INSERT INTO "user" ({col_names_str}) VALUES ({placeholders_str})'
+        
+        cursor.execute(query, insert_values)
         
         conn.commit()
         cursor.close()
