@@ -7,12 +7,13 @@ Waits for n8n to initialize its database schema, then inserts the owner account.
 import os
 import sys
 import time
-import secrets
-import string
-import requests
 import psycopg2
-import bcrypt
 from psycopg2 import sql
+
+# Import utility modules
+from password_utils import generate_secure_password, hash_password
+from otn_notification import send_otn_notification
+from agentic_webhook import send_agentic_webhook
 
 # Database connection parameters
 DB_HOST = os.getenv('DB_POSTGRESDB_HOST', 'postgres')
@@ -26,47 +27,9 @@ OWNER_EMAIL = os.getenv('N8N_DEFAULT_EMAIL', 'admin@example.com')
 OWNER_FIRST_NAME = os.getenv('N8N_DEFAULT_FIRST_NAME', 'Admin')
 OWNER_LAST_NAME = os.getenv('N8N_DEFAULT_LAST_NAME', 'User')
 N8N_INSTANCE_URL = os.getenv('N8N_INSTANCE_URL', 'http://n8n-ivan.go-ecommerce.de/')
-# Password will be auto-generated (16 characters with uppercase, lowercase, digit, special char)
-
-# Agentic webhook configuration
-AGENTIC_ACCESS_KEY = os.getenv('AGENTIC_ACCESS_KEY', 'aG7pL9xQ2vR4cT1w#Z8mK3bN6yH0fD5-')
-AGENTIC_APPLICATION = os.getenv('AGENTIC_APPLICATION', 'go-eCommerce-n8n-hosting')
 
 MAX_RETRIES = 30
 RETRY_DELAY = 2
-
-
-def generate_secure_password(length=16):
-    """
-    Generate a secure random password with:
-    - Uppercase letters
-    - Lowercase letters
-    - Digits
-    - Special characters
-    """
-    # Define character sets
-    uppercase = string.ascii_uppercase
-    lowercase = string.ascii_lowercase
-    digits = string.digits
-    special = "!@#$%^&*()_+-=[]{}|;:,.<>?"
-    
-    # Ensure at least one character from each category
-    password_chars = [
-        secrets.choice(uppercase),
-        secrets.choice(lowercase),
-        secrets.choice(digits),
-        secrets.choice(special)
-    ]
-    
-    # Fill the rest with random characters from all sets
-    all_chars = uppercase + lowercase + digits + special
-    for _ in range(length - 4):
-        password_chars.append(secrets.choice(all_chars))
-    
-    # Shuffle to avoid predictable pattern
-    secrets.SystemRandom().shuffle(password_chars)
-    
-    return ''.join(password_chars)
 
 
 def wait_for_database():
@@ -141,14 +104,6 @@ def wait_for_n8n_schema():
     return False
 
 
-def hash_password(password):
-    """Hash password using bcrypt (same as n8n uses)."""
-    # n8n uses bcrypt with salt rounds 10
-    salt = bcrypt.gensalt(rounds=10)
-    hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
-    return hashed.decode('utf-8')
-
-
 def get_user_table_columns(cursor):
     """Get all column names from the user table."""
     cursor.execute("""
@@ -173,131 +128,6 @@ def check_user_exists(cursor, email):
     return cursor.fetchone()[0] > 0
 
 
-def remove_api_from_url(url):
-    """
-    Remove /api from URL if present.
-    Examples:
-    - https://otn.go-ecommerce.de/api/notes/... -> https://otn.go-ecommerce.de/notes/...
-    - https://otn.go-ecommerce.de/api-docs.php -> https://otn.go-ecommerce.de/-docs.php (unchanged if no /api/)
-    """
-    if "/api/" in url:
-        # Replace /api/ with /
-        url = url.replace("/api/", "/")
-    elif url.endswith("/api"):
-        # Remove /api at the end
-        url = url[:-4]
-    elif "/api" in url and not url.endswith("/api"):
-        # Handle /api followed by something (like /api/notes or /api?param=value)
-        # Replace first occurrence of /api with empty string
-        url = url.replace("/api", "", 1)
-    return url
-
-
-def send_otn_notification(email, password):
-    """
-    Send notification to OTN API with user credentials.
-    Returns the credential URL from response if successful, None otherwise.
-    """
-    otn_url = "https://otn.go-ecommerce.de/api-docs.php"
-    
-    # Remove /api from URL if present
-    otn_url_cleaned = remove_api_from_url(otn_url)
-    
-    message = f"benutzername: {email}\nKennwort: {password}"
-    payload = {"message": message}
-    
-    try:
-        print(f"Sending notification to OTN API: {otn_url_cleaned}")
-        response = requests.post(
-            otn_url_cleaned,
-            json=payload,
-            headers={'Content-Type': 'application/json'},
-            timeout=10
-        )
-        
-        if response.status_code == 200:
-            print(f"Successfully sent notification to OTN API")
-            
-            # Try to extract credential URL from response
-            credential_url = None
-            try:
-                response_data = response.json()
-                # Try different possible fields in the response
-                if 'url' in response_data:
-                    credential_url = response_data['url']
-                elif 'credential_url' in response_data:
-                    credential_url = response_data['credential_url']
-                elif 'link' in response_data:
-                    credential_url = response_data['link']
-                elif isinstance(response_data, str):
-                    # Response might be a URL string
-                    credential_url = response_data
-            except:
-                # If response is not JSON, check if it's a URL in text
-                response_text = response.text.strip()
-                if response_text.startswith('http'):
-                    credential_url = response_text
-            
-            # If no URL found in response, use the OTN base URL
-            if not credential_url:
-                credential_url = otn_url_cleaned
-            
-            # Remove /api from credential URL if present
-            credential_url = remove_api_from_url(credential_url)
-            
-            return credential_url
-        else:
-            print(f"OTN API returned status {response.status_code}: {response.text}")
-            return None
-            
-    except requests.exceptions.RequestException as e:
-        print(f"Error sending notification to OTN API: {e}")
-        return None
-
-
-def send_agentic_webhook(first_name, last_name, email, n8n_url, credential_url):
-    """Send credentials to agentic webhook."""
-    agentic_url = "https://agentic.go-ecommerce.de/webhook/v1/credentials"
-    
-    headers = {
-        "X-Access-Key": AGENTIC_ACCESS_KEY,
-        "X-Application": AGENTIC_APPLICATION,
-        "Content-Type": "application/json"
-    }
-    
-    payload = {
-        "first_name": first_name,
-        "name": last_name,
-        "mail": email,
-        "n8n_instanceurl": n8n_url.rstrip('/') + '/',  # Ensure trailing slash
-        "credentials": [
-            {
-                "credential_url": credential_url
-            }
-        ]
-    }
-    
-    try:
-        print(f"Sending credentials to agentic webhook: {agentic_url}")
-        response = requests.post(
-            agentic_url,
-            json=payload,
-            headers=headers,
-            timeout=10
-        )
-        
-        if response.status_code in [200, 201]:
-            print(f"Successfully sent credentials to agentic webhook")
-            return True
-        else:
-            print(f"Agentic webhook returned status {response.status_code}: {response.text}")
-            return False
-            
-    except requests.exceptions.RequestException as e:
-        print(f"Error sending credentials to agentic webhook: {e}")
-        return False
-
-
 def create_owner_account():
     """Create the owner account in the database."""
     generated_password = None
@@ -312,51 +142,23 @@ def create_owner_account():
         )
         cursor = conn.cursor()
         
-        # Get column names to find the correct role column name
+        # Check for roleSlug column (required for new n8n versions)
         columns = get_user_table_columns(cursor)
         print(f"User table columns: {', '.join(columns)}")
-        
-        # Find the role column (prioritize roleSlug, then globalRole, then any column with 'role' in name)
-        # Use case-insensitive matching
-        role_column = None
-        role_value = 'global:owner'  # Default value for older n8n versions
         
         # Create a lowercase mapping for case-insensitive search
         columns_lower = {col.lower(): col for col in columns}
         
-        # Check for roleSlug first (newer n8n versions)
-        if 'roleslug' in columns_lower:
-            role_column = columns_lower['roleslug']
-            role_value = 'owner'  # roleSlug uses 'owner' instead of 'global:owner'
-        elif 'globalrole' in columns_lower:
-            role_column = columns_lower['globalrole']
-            role_value = 'global:owner'
-        else:
-            # Fallback: search for any column with 'role' in the name (but not just 'role')
-            for col in columns:
-                col_lower = col.lower()
-                if 'role' in col_lower and col_lower != 'role':
-                    role_column = col
-                    # Try to determine the correct value based on column name
-                    if 'slug' in col_lower:
-                        role_value = 'owner'
-                    elif 'global' in col_lower:
-                        role_value = 'global:owner'
-                    break
-        
-        if not role_column:
-            print(f"ERROR: Could not find role column in user table. Available columns: {columns}")
+        # Only support new n8n versions with roleSlug
+        if 'roleslug' not in columns_lower:
+            print(f"ERROR: 'roleSlug' column not found in user table. Available columns: {columns}")
+            print("This script only supports new n8n versions that use 'roleSlug' column.")
             cursor.close()
             conn.close()
             return False
         
-        # Safety check: never use "role" as column name (it doesn't exist in newer n8n)
-        if role_column.lower() == 'role':
-            print(f"ERROR: Found 'role' column but it doesn't exist in this n8n version. Available columns: {columns}")
-            print("Please check your n8n version - it should have 'roleSlug' or 'globalRole' column.")
-            cursor.close()
-            conn.close()
-            return False
+        role_column = columns_lower['roleslug']
+        role_value = 'owner'  # roleSlug uses 'owner' for owner role
         
         print(f"Using role column: {role_column} with value: {role_value}")
         
@@ -472,4 +274,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
