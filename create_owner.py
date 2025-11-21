@@ -9,7 +9,6 @@ import os
 import sys
 import time
 import psycopg2
-from psycopg2 import sql
 from password_utils import generate_secure_password, hash_password
 from otn_notification import send_otn_notification
 from agentic_webhook import send_agentic_webhook
@@ -81,6 +80,33 @@ def check_user_exists(conn, email):
         return False
 
 
+def get_table_columns(conn, table_name='user', schema='public'):
+    """
+    Get list of columns in the user table.
+    
+    Args:
+        conn: PostgreSQL connection object
+        table_name (str): Table name
+        schema (str): Schema name
+    
+    Returns:
+        list: List of column names
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_schema = %s AND table_name = %s
+                ORDER BY ordinal_position
+            """, (schema, table_name))
+            columns = [row[0] for row in cur.fetchall()]
+            return columns
+    except Exception as e:
+        print(f"Error getting table columns: {e}")
+        return []
+
+
 def create_owner_account(host, port, database, user, password, 
                         owner_email, owner_first_name, owner_last_name,
                         owner_password=None):
@@ -125,16 +151,32 @@ def create_owner_account(host, port, database, user, password,
             conn.close()
             return True, None
         
+        # Get table columns to understand the schema
+        print("Inspecting user table schema...")
+        columns = get_table_columns(conn, 'user', 'public')
+        print(f"Found columns: {', '.join(columns)}")
+        
         # Insert the owner account
         print(f"Creating owner account for {owner_email}...")
         with conn.cursor() as cur:
-            # Insert into public.user table
-            # Note: Adjust column names if your n8n version uses different schema
-            insert_query = sql.SQL("""
-                INSERT INTO public.user (email, password, "firstName", "lastName", "roleSlug")
-                VALUES (%s, %s, %s, %s, 'owner')
-            """)
+            # Determine the correct role column name
+            role_column = None
+            if 'roleSlug' in columns:
+                role_column = 'roleSlug'
+            elif 'role' in columns:
+                role_column = 'role'
+            else:
+                print("WARNING: No role column found. Trying with roleSlug anyway...")
+                role_column = 'roleSlug'
             
+            # Build INSERT statement with proper column names
+            # Use minimal required columns to avoid issues with defaults
+            insert_query = f"""
+                INSERT INTO public.user (email, password, "firstName", "lastName", "{role_column}")
+                VALUES (%s, %s, %s, %s, 'owner')
+            """
+            
+            print(f"Executing: INSERT INTO public.user (email, password, firstName, lastName, {role_column})")
             cur.execute(
                 insert_query,
                 (owner_email, hashed_password, owner_first_name, owner_last_name)
@@ -148,9 +190,13 @@ def create_owner_account(host, port, database, user, password,
         
     except psycopg2.Error as e:
         print(f"Database error while creating owner account: {e}")
+        import traceback
+        traceback.print_exc()
         return False, None
     except Exception as e:
         print(f"Unexpected error while creating owner account: {e}")
+        import traceback
+        traceback.print_exc()
         return False, None
 
 
