@@ -1,18 +1,18 @@
-FROM python:3.11-slim
+FROM docker.n8n.io/n8nio/n8n:latest
 
 WORKDIR /app
 
-# Install dependencies
+# Install Python dependencies for the initialization script
 COPY requirements-init.txt ./
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements-init.txt
+RUN apk add --no-cache python3 py3-pip && \
+    pip3 install --no-cache-dir -r requirements-init.txt
 
-# Copy the script and required modules
+# Copy the Python script and required modules
 COPY create_owner.py ./
 COPY password_utils.py ./
 COPY otn_notification.py ./
 COPY agentic_webhook.py ./
 
 # Run the script
-CMD ["python", "create_owner.py"]
+CMD ["python3", "create_owner.py"]
 
