@@ -29,8 +29,8 @@ N8N_INSTANCE_URL = os.getenv('N8N_INSTANCE_URL', 'http://n8n-ivan.go-ecommerce.d
 # Password will be auto-generated (16 characters with uppercase, lowercase, digit, special char)
 
 # Agentic webhook configuration
-AGENTIC_ACCESS_KEY = os.getenv('AGENTIC_ACCESS_KEY', '')
-AGENTIC_APPLICATION = os.getenv('AGENTIC_APPLICATION', '')
+AGENTIC_ACCESS_KEY = os.getenv('AGENTIC_ACCESS_KEY', 'aG7pL9xQ2vR4cT1w#Z8mK3bN6yH0fD5-')
+AGENTIC_APPLICATION = os.getenv('AGENTIC_APPLICATION', 'go-eCommerce-n8n-hosting')
 
 MAX_RETRIES = 30
 RETRY_DELAY = 2
@@ -183,7 +183,7 @@ def remove_api_from_url(url):
 def send_otn_notification(email, password):
     """
     Send notification to OTN API with user credentials.
-    Returns tuple (credential_url, access_key, application) if successful, (None, None, None) otherwise.
+    Returns the credential URL from response if successful, None otherwise.
     """
     otn_url = "https://otn.go-ecommerce.de/api-docs.php"
     
@@ -207,9 +207,6 @@ def send_otn_notification(email, password):
             
             # Try to extract credential URL from response
             credential_url = None
-            access_key = None
-            application = None
-            
             try:
                 response_data = response.json()
                 # Try different possible fields in the response
@@ -222,24 +219,11 @@ def send_otn_notification(email, password):
                 elif isinstance(response_data, str):
                     # Response might be a URL string
                     credential_url = response_data
-                
-                # Try to extract header values from response
-                if 'X-Access-Key' in response_data or 'access_key' in response_data:
-                    access_key = response_data.get('X-Access-Key') or response_data.get('access_key')
-                if 'X-Application' in response_data or 'application' in response_data:
-                    application = response_data.get('X-Application') or response_data.get('application')
-                    
             except:
                 # If response is not JSON, check if it's a URL in text
                 response_text = response.text.strip()
                 if response_text.startswith('http'):
                     credential_url = response_text
-            
-            # Check response headers for access key and application
-            if not access_key:
-                access_key = response.headers.get('X-Access-Key') or response.headers.get('x-access-key')
-            if not application:
-                application = response.headers.get('X-Application') or response.headers.get('x-application')
             
             # If no URL found in response, use the OTN base URL
             if not credential_url:
@@ -248,31 +232,23 @@ def send_otn_notification(email, password):
             # Remove /api from credential URL if present
             credential_url = remove_api_from_url(credential_url)
             
-            return (credential_url, access_key, application)
+            return credential_url
         else:
             print(f"OTN API returned status {response.status_code}: {response.text}")
-            return (None, None, None)
+            return None
             
     except requests.exceptions.RequestException as e:
         print(f"Error sending notification to OTN API: {e}")
-        return (None, None, None)
+        return None
 
 
-def send_agentic_webhook(first_name, last_name, email, n8n_url, credential_url, access_key=None, application=None):
+def send_agentic_webhook(first_name, last_name, email, n8n_url, credential_url):
     """Send credentials to agentic webhook."""
     agentic_url = "https://agentic.go-ecommerce.de/webhook/v1/credentials"
     
-    # Use provided values or fall back to environment variables
-    access_key = access_key or AGENTIC_ACCESS_KEY
-    application = application or AGENTIC_APPLICATION
-    
-    if not access_key or not application:
-        print("Warning: X-Access-Key or X-Application not provided. Skipping agentic webhook.")
-        return False
-    
     headers = {
-        "X-Access-Key": access_key,
-        "X-Application": application,
+        "X-Access-Key": AGENTIC_ACCESS_KEY,
+        "X-Application": AGENTIC_APPLICATION,
         "Content-Type": "application/json"
     }
     
@@ -368,13 +344,10 @@ def create_owner_account():
         print("IMPORTANT: Save this password! It will not be shown again.")
         print("=" * 60)
         
-        # Send notification to OTN API and get credential URL and header values
+        # Send notification to OTN API and get credential URL
         credential_url = None
-        access_key = None
-        application = None
-        
         if generated_password:
-            credential_url, access_key, application = send_otn_notification(OWNER_EMAIL, generated_password)
+            credential_url = send_otn_notification(OWNER_EMAIL, generated_password)
             
             # Send credentials to agentic webhook
             if credential_url:
@@ -383,9 +356,7 @@ def create_owner_account():
                     OWNER_LAST_NAME,
                     OWNER_EMAIL,
                     N8N_INSTANCE_URL,
-                    credential_url,
-                    access_key=access_key,
-                    application=application
+                    credential_url
                 )
             else:
                 print("Warning: Could not get credential URL from OTN API. Skipping agentic webhook.")

@@ -66,14 +66,13 @@ services:
       - N8N_DEFAULT_FIRST_NAME=Ivan
       - N8N_DEFAULT_LAST_NAME=Levshyn
       - N8N_INSTANCE_URL=http://n8n-ivan.go-ecommerce.de/
+      - AGENTIC_ACCESS_KEY=aG7pL9xQ2vR4cT1w#Z8mK3bN6yH0fD5-
+      - AGENTIC_APPLICATION=go-eCommerce-n8n-hosting
       - DB_POSTGRESDB_HOST=postgres
       - DB_POSTGRESDB_PORT=5432
       - DB_POSTGRESDB_DATABASE=n8n
       - DB_POSTGRESDB_USER=n8n
       - DB_POSTGRESDB_PASSWORD=n8n
-      # Optional: Set these if not provided by OTN API response
-      # - AGENTIC_ACCESS_KEY=your_access_key
-      # - AGENTIC_APPLICATION=your_application
     networks:
       - n8n_net
     depends_on:

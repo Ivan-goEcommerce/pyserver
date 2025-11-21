@@ -1,10 +1,11 @@
-FROM python
+FROM python:3.11-slim
 
 WORKDIR /app
 
 # Install dependencies
 COPY requirements-init.txt ./
-RUN pip install --no-cache-dir -r requirements-init.txt
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements-init.txt
 
 # Copy the script
 COPY create_owner.py ./
